@@ -1,0 +1,9 @@
+{
+  "_note": "Demo threat-intel feed of known-bad indicators. All addresses are RFC 5737 documentation ranges.",
+  "ips": {
+    "192.0.2.77": {"reputation": "malicious", "tags": ["scanner", "sqlmap", "log4shell-exploitation"], "first_seen": "2026-09-30", "source": "demo-feed"},
+    "203.0.113.99": {"reputation": "malicious", "tags": ["c2", "metasploit-handler", "payload-hosting"], "first_seen": "2026-10-01", "source": "demo-feed"},
+    "203.0.113.45": {"reputation": "suspicious", "tags": ["ssh-bruteforce"], "first_seen": "2026-10-08", "source": "demo-feed"}
+  },
+  "suspicious_ports": [4444, 1337, 31337, 6667, 1389, 9001]
+}
