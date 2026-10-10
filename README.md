@@ -55,7 +55,7 @@ cp .env.example .env        # add ANTHROPIC_API_KEY / OPENAI_API_KEY / OPENROUTE
 
 streamlit run app/streamlit_app.py     # dashboard
 python -m secagents --json results.json  # CLI: writes security_report.md (add --docx r.docx --xlsx r.xlsx --pdf r.pdf)
-pytest                                  # 49 tests, no API keys needed
+pytest                                  # 74 tests, no API keys needed
 ```
 
 The CLI accepts your own data: `python -m secagents --logs /var/log/auth.log access.log --code ./src --requirements requirements.txt --dockerfile Dockerfile --config my_config.yaml`.
@@ -97,11 +97,14 @@ secagents/
   live.py        Live scan: log tailer, alert de-duplication, demo replay, live_logs/ helpers
   report.py      Markdown report
   exporters.py   Word / Excel / PDF exports of the same report data
+  web.py         FastAPI web API (the Vercel entrypoint)
   qa.py          Ask-the-agents Q&A
 knowledge/       cves.jsonl, attack.jsonl, controls.jsonl, threat_feed.json
 samples/         demo logs, vulnerable app, system config, live_examples/ (paste-in attack lines)
 app/             Streamlit dashboard (assets/: banner still PNG and scanning GIF)
 scripts/         make_banner.py regenerates the banner images
+pyproject.toml   API dependencies and the Vercel entrypoint (tool.vercel)
+.vercelignore    files kept out of the Vercel bundle
 tests/
 ```
 
@@ -112,6 +115,56 @@ tests/
 - **New controls**: add a line to `knowledge/controls.jsonl` naming the checks that evidence it, and a check in `policy_checker.py` if needed.
 
 > All IP addresses are from RFC 5737 documentation ranges. The vulnerable app exists only to be scanned: do not deploy it.
+
+## Deploying
+
+Two things can be deployed, and they need different hosts:
+
+| | Dashboard (`app/streamlit_app.py`) | Web API (`secagents/web.py`) |
+|---|---|---|
+| What it is | Streamlit UI: Live scan, folder scan, charts, Ask tab | FastAPI: send text, get the assessment or a report back |
+| Needs | A long-lived server and a WebSocket | Nothing special: runs as a serverless function |
+| Hosts | Streamlit Community Cloud, Render, Railway, Fly.io, Hugging Face Spaces, a VM | **Vercel**, or any ASGI host (`uvicorn secagents.web:app`) |
+
+**Vercel cannot run the Streamlit dashboard** (no persistent WebSocket, no writable disk), which is why a deploy without an entrypoint fails with *"No python entrypoint found"*. `pyproject.toml` therefore points Vercel at the API:
+
+```toml
+[tool.vercel]
+entrypoint = "secagents.web:app"
+```
+
+**API endpoints**
+
+| Endpoint | What it does |
+|---|---|
+| `GET /` | Landing page with examples; `/docs` is the interactive OpenAPI page |
+| `GET /health` | Status, whether the LLM / auth are enabled |
+| `POST /api/assess` | Runs the five agents; returns `{summary, result}` |
+| `POST /api/export/{docx,xlsx,pdf,md}` | Same, returned as a downloadable report |
+
+```bash
+curl -X POST $URL/api/assess -H "content-type: application/json" -d '{"demo": true}'
+curl -X POST $URL/api/export/pdf -H "content-type: application/json" -o report.pdf   -d '{"logs": {"auth.log": "Oct  9 10:05:04 web-01 sshd[1]: Failed password for root from 203.0.113.9 port 22 ssh2"}}'
+```
+
+The body takes `demo`, or your own `logs` (file name to text; the name picks the parser), `code` (path to Python source), `requirements`, `dockerfile` and `config_yaml`. It accepts **contents only, never server paths**, rejects `..` and absolute names, and caps a request at 2,000,000 characters and 50 files.
+
+**Settings for a public URL (environment variables on the host)**
+
+| Variable | Effect |
+|---|---|
+| `SECAGENTS_API_TOKEN` | If set, every `/api/*` call needs `Authorization: Bearer <token>` (`/health` stays open). **Set this for anything public.** |
+| `SECAGENTS_API_ALLOW_LLM=1` | Allows requests that ask for `use_llm`. Off by default so a stranger cannot spend your LLM credits; the API is rule-based unless you enable it. Also add `ANTHROPIC_API_KEY` / `OPENAI_API_KEY` / `OPENROUTER_API_KEY` on the host if you do. |
+| `SECAGENTS_KB=memory` | Force the in-memory knowledge base (used automatically when `chromadb` is not installed). |
+
+**Size.** The API installs without `chromadb` and Streamlit: about 143 MB, versus about 500 MB with them (Vercel's Python limit is 500 MB). The knowledge base is a few dozen records, so it runs in memory with an exact similarity search that ranks the same as Chroma. The dashboard keeps Chroma (`pip install -r requirements.txt`).
+
+**Limits to know about**
+- Nothing persists on serverless: no scan history, no Live scan, no folder scan. Those are dashboard features.
+- Each cold start rebuilds the knowledge base in memory (instant with the local embedding; a few embedding calls if an OpenAI key is set).
+- A full assessment takes several seconds rule-based and longer with the LLM; raise the function's `maxDuration` in Vercel if requests time out.
+- I verified the API locally, in a clean environment with only its dependencies, but have not deployed it to Vercel.
+- Vercel installs from `pyproject.toml`; `requirements.txt` (the dashboard's list, with `chromadb` and Streamlit) is listed in `.vercelignore` so it cannot be picked up instead. Vercel's docs do not say which file wins when both exist, so if a build reports a bundle larger than 500 MB, check that first.
 
 ## Requirements checklist
 
@@ -187,7 +240,7 @@ Threat Intelligence (CVE and ATT&CK lookup), the Policy Checker (control text fo
 OpenAI embeddings when an OpenAI key is available, otherwise a local hashed embedding, so RAG also works offline. The key typed in the dashboard (for the OpenAI provider) wins over `OPENAI_API_KEY` in `.env`. Typing, changing or clearing it switches the knowledge base on the next agent run: Chroma keeps separate collections per backend, so the OpenAI collections are built once, kept on disk and only topped up afterwards, and clearing the key returns to `.env` (or local). A key that fails (wrong or unreachable) falls back to local embeddings and is not retried until it changes. The sidebar shows which embeddings are in use.
 
 **Can retrieval fail while Chroma builds its index?**
-Chroma can briefly report "Nothing found on disk" for a brand-new collection, depending on timing and threads. Retrieval retries and then falls back to an exact similarity search over the stored vectors (same ranking, the knowledge base is tiny), so an agent run never fails on it.
+Chroma can briefly report "Nothing found on disk" for a brand-new collection; it depends on timing, not on the data. The knowledge base therefore keeps an in-memory copy of every vector as it ingests them. A failing query is retried with a growing pause and then answered from that copy with an exact similarity search (same ranking as the index, the knowledge base is tiny), so an agent run never fails on it.
 
 **Which LLM providers are supported and how does fallback work?**
 OpenRouter, Anthropic (Claude) and OpenAI. The default order is `openrouter,anthropic,openai` (`LLM_PROVIDER_ORDER`). If a provider has no key, fails or refuses, the next one is tried; if all fail, the agent uses its rule-based output.

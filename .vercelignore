@@ -1,0 +1,13 @@
+.venv/
+venv/
+.env
+.history/
+.chroma/
+.pytest_cache/
+live_logs/
+tests/
+scripts/
+app/
+README.md
+# The API installs from pyproject.toml (no chromadb / Streamlit); keep the dashboard requirements out of the bundle
+requirements.txt

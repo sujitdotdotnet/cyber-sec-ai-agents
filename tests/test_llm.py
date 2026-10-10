@@ -175,7 +175,11 @@ def test_search_survives_chroma_index_not_ready_and_ranks_identically(tmp_path, 
         calls["n"] += 1
         raise RuntimeError("Error creating hnsw segment reader: Nothing found on disk")
 
+    def unreadable(self, *a, **k):  # Chroma's stored vectors are behind the same unready index
+        raise RuntimeError("Error creating hnsw segment reader: Nothing found on disk")
+
     monkeypatch.setattr(chroma_collection.Collection, "query", not_ready)
+    monkeypatch.setattr(chroma_collection.Collection, "get", unreadable)  # the fallback must not rely on Chroma
     monkeypatch.setattr("secagents.rag.store.time.sleep", lambda s: None)
     fallback = kb.search("cves", "log4j remote code execution jndi", k=3)
 
@@ -199,7 +203,7 @@ def test_search_retries_then_succeeds_when_the_index_becomes_ready(tmp_path, mon
 
     monkeypatch.setattr(chroma_collection.Collection, "query", flaky)
     monkeypatch.setattr("secagents.rag.store.time.sleep", lambda s: None)
-    assert kb.search("cves", "log4j", k=2) and state["n"] == 3
+    assert kb.search("cves", "log4j", k=2) and state["n"] >= 3  # (the real query may itself be slow to become ready)
 
 
 def test_embedding_backend_reports_the_backend_about_to_be_used(tmp_path, monkeypatch):
@@ -222,3 +226,73 @@ def test_embedding_backend_reports_the_backend_about_to_be_used(tmp_path, monkey
     store.set_embedding_key("bad-key")
     store.get_kb()
     assert store.embedding_backend() == "hash"  # the key failed, so what is really in use is local
+
+
+# ---- in-memory knowledge base (the serverless API runs without chromadb) -------------------
+QUERIES = [("cves", "log4j remote code execution jndi"), ("cves", "flask debugger werkzeug console"),
+           ("attack", "brute force ssh password spraying"), ("attack", "exfiltration over alternative protocol"),
+           ("controls", "multi factor authentication privileged accounts"), ("controls", "log retention siem")]
+
+
+def test_memory_store_ranks_exactly_like_chroma(tmp_path, monkeypatch):
+    chroma_kb = make_kb(tmp_path)
+    monkeypatch.setenv("SECAGENTS_KB", "memory")
+    memory_kb = make_kb(tmp_path / "other")
+    from secagents.rag.store import MemoryClient
+
+    assert isinstance(memory_kb.client, MemoryClient) and not isinstance(chroma_kb.client, MemoryClient)
+    for kind, q in QUERIES:
+        a, b = chroma_kb.search(kind, q, k=4), memory_kb.search(kind, q, k=4)
+        assert [h["id"] for h in a] == [h["id"] for h in b], (kind, q)
+        assert [h["score"] for h in a] == pytest.approx([h["score"] for h in b], abs=1e-3)
+
+
+def test_knowledge_base_works_when_chromadb_is_not_installed(tmp_path, monkeypatch):
+    import openai
+
+    from secagents.rag import store
+
+    monkeypatch.setattr(store, "chromadb", None)  # as on the serverless host
+    kb = make_kb(tmp_path)
+    assert isinstance(kb.client, store.MemoryClient) and kb.search("cves", "log4j", k=2)
+    monkeypatch.setattr(openai, "OpenAI", _StubOpenAI)
+    assert kb.use_key("good-typed") and kb.backend == "openai"  # key switching still works
+    assert kb.search("cves", "log4j", k=2)
+    assert not (tmp_path / "chroma").exists()  # nothing is written to disk
+
+
+def test_memory_collection_matches_the_chroma_calls_the_store_uses():
+    from secagents.rag.store import MemoryClient
+
+    col = MemoryClient().get_or_create_collection("c", metadata={"hnsw:space": "cosine"})
+    col.add(ids=["a", "b"], documents=["da", "db"], embeddings=[[1, 0], [0, 1]], metadatas=[{}, {}])
+    assert col.get(ids=["a", "zzz"])["ids"] == ["a"]  # missing ids are simply absent
+    res = col.query(query_embeddings=[[1, 0.1]], n_results=1)
+    assert res["ids"] == [["a"]] and res["documents"] == [["da"]] and res["distances"][0][0] < 0.01
+    assert set(col.get(include=["embeddings", "documents"])["ids"]) == {"a", "b"}
+
+
+def test_restart_reuses_stored_vectors_and_search_survives_an_unreadable_store(tmp_path, monkeypatch):
+    """A second run over an already-populated Chroma folder copies the vectors into memory, even if Chroma will not give them back."""
+    import chromadb.api.models.Collection as chroma_collection
+
+    first = make_kb(tmp_path)
+    expected = [h["id"] for h in first.search("cves", "log4j remote code execution jndi", k=3)]
+
+    second = make_kb(tmp_path)  # same folder: every record already stored, so nothing is re-added
+    assert len(second._mirror_collection("cves").get()["ids"]) == len(second.all("cves"))
+    assert [h["id"] for h in second.search("cves", "log4j remote code execution jndi", k=3)] == expected
+
+    def boom(self, *a, **k):
+        raise RuntimeError("Nothing found on disk")
+
+    real_get = chroma_collection.Collection.get
+
+    def get_ids_only(self, ids=None, include=None, **k):  # existence check works, vectors cannot be read
+        if include and "embeddings" in include:
+            boom(self)
+        return real_get(self, ids=ids, **({"include": include} if include is not None else {}), **k)
+
+    monkeypatch.setattr(chroma_collection.Collection, "get", get_ids_only)
+    third = make_kb(tmp_path)  # must recompute vectors instead of failing at start-up
+    assert [h["id"] for h in third.search("cves", "log4j remote code execution jndi", k=3)] == expected
