@@ -21,6 +21,7 @@ from secagents.config import settings  # noqa: E402
 from secagents.graph import default_inputs, stream  # noqa: E402
 from secagents.llm import get_router  # noqa: E402
 from secagents.qa import ask  # noqa: E402
+from secagents.repo_scan import browse_folder, collect_repo_inputs  # noqa: E402
 
 st.set_page_config(page_title="Cyber Security AI Agent", page_icon="🛡️", layout="wide")
 # wider sidebar so the title fits on one line (only while it is open, so collapsing still works)
@@ -97,6 +98,15 @@ def delete_scan(scan_id: str) -> None:
         st.session_state.pop("scan", None)
 
 
+def pick_folder(key: str) -> None:
+    """Button callback: fill the path box from a native folder dialog (runs before the widget redraws)."""
+    chosen = browse_folder()
+    if chosen:
+        st.session_state[key] = chosen
+    else:
+        st.session_state["browse_failed"] = True
+
+
 def save_uploads(files, folder: Path) -> list[str]:
     paths = []
     for f in files or []:
@@ -127,6 +137,7 @@ with st.sidebar:
 
     source = st.radio("Data to analyze", ["Demo attack scenario", "Upload my own files"], key=f"source-{nonce}")
     inputs = default_inputs()
+    repo_folder = repo_excludes = ""
     if source == "Upload my own files":
         tmp = Path(tempfile.mkdtemp(prefix="secagents_"))
         logs = st.file_uploader("Log files (auth.log, access.log, firewall.log)", accept_multiple_files=True, key=f"logs-{nonce}")
@@ -143,6 +154,22 @@ with st.sidebar:
             "config_path": save_uploads([cfg], tmp)[0] if cfg else "",
         }
         save_uploads(code, tmp / "code")
+        st.markdown("**Or scan a whole folder**")
+        repo_key = f"repo-{nonce}"
+        repo_folder = st.text_input(
+            "Repository folder path", key=repo_key, placeholder=r"e.g. C:\projects\my-app",
+            help="Type a path or use Browse. The folder is on the machine running this app. Logs, Python code, "
+                 "requirements, Dockerfile and config are found automatically. Files matched by the folder's "
+                 ".gitignore / .ignore are skipped.",
+        )
+        st.button("📂 Browse...", key=f"browse-{nonce}", on_click=pick_folder, args=(repo_key,),
+                  use_container_width=True, help="Open a folder chooser on this machine")
+        if st.session_state.pop("browse_failed", False):
+            st.warning("Couldn't open a folder dialog here (no display?). Type the path instead.")
+        repo_excludes = st.text_input(
+            "Exclude folders (comma-separated)", key=f"exclude-{nonce}", placeholder="e.g. tests, docs, build",
+            help="Added on top of the .gitignore / .ignore rules. Folder names or relative paths; wildcards allowed.",
+        )
     scan_name = st.text_input("Scan name (optional)", key=f"name-{nonce}",
                               placeholder="e.g. Prod web server, weekly check")
     run = st.button("▶ Run assessment", type="primary", use_container_width=True)
@@ -165,6 +192,18 @@ with st.sidebar:
                       use_container_width=True)
 
 # ---- run the graph with a live agent trace ----------------------------------------
+if run and repo_folder.strip():
+    try:
+        repo_inputs, found = collect_repo_inputs(repo_folder.strip(), repo_excludes)
+    except OSError as exc:
+        st.error(str(exc))
+        st.stop()
+    # folder results fill the slots; logs from both sources are scanned
+    inputs = {**inputs, **{k: v for k, v in repo_inputs.items() if v and k != "log_paths"},
+              "log_paths": inputs["log_paths"] + repo_inputs["log_paths"]}
+    st.info(f"📁 Scanning `{repo_folder.strip()}`: {found['logs']} log file(s), {found['python']} Python file(s), "
+            f"{found['requirements']} requirements, {found['dockerfiles']} Dockerfile(s), {found['configs']} config file(s).")
+
 if run:
     state: dict = {}
     trace: list = []
