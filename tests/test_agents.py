@@ -101,3 +101,23 @@ def test_pipeline_with_llm_responses(monkeypatch):
     assert state["incident_plan"]["briefing"] == "LLM briefing"
     assert any(s.get("source") == "llm" and s["action"] == "Revoke cloud tokens" for s in state["incident_plan"]["steps"])
     assert state["compliance"]["roadmap"] == "LLM text for policy_checker"
+
+
+def test_scan_history_roundtrip(tmp_path, monkeypatch):
+    from dataclasses import replace
+
+    from secagents import history
+
+    monkeypatch.setattr(history, "settings", replace(history.settings, history_dir=tmp_path))
+    result = {"threat_intel": {"overall_risk": "CRITICAL"}, "incident_plan": {"incidents": [1, 2]}}
+    first = history.save(result, "", "Demo attack scenario")
+    second = history.save(result, "Prod web", "Upload my own files")
+    scans = history.list_scans()
+    assert [s["id"] for s in scans] == [second, first]
+    assert scans[0]["name"] == "Prod web" and "result" not in scans[0]
+    assert scans[1]["name"].startswith("Demo attack scenario") and scans[1]["name"].endswith("CRITICAL")
+    assert history.load(first)["result"] == result
+    history.rename(first, "Renamed")
+    assert history.load(first)["name"] == "Renamed"
+    history.delete(first)
+    assert [s["id"] for s in history.list_scans()] == [second]

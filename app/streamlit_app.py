@@ -16,6 +16,7 @@ import streamlit as st
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
+from secagents import history  # noqa: E402
 from secagents.config import settings  # noqa: E402
 from secagents.graph import default_inputs, stream  # noqa: E402
 from secagents.llm import get_router  # noqa: E402
@@ -41,6 +42,26 @@ def sev(s: str) -> str:
     return f"{SEV_ICON.get(s, '')} {s}"
 
 
+def reset_app() -> None:
+    """Back to a clean start: no result, no chat, fresh widgets. Saved history is kept."""
+    nonce = st.session_state.get("nonce", 0) + 1
+    st.session_state.clear()
+    st.session_state["nonce"] = nonce
+
+
+def open_scan(scan_id: str) -> None:
+    rec = history.load(scan_id)
+    st.session_state["result"] = rec["result"]
+    st.session_state["scan"] = {k: v for k, v in rec.items() if k != "result"}
+    st.session_state.pop("chat", None)
+
+
+def delete_scan(scan_id: str) -> None:
+    history.delete(scan_id)
+    if st.session_state.get("scan", {}).get("id") == scan_id:
+        st.session_state.pop("scan", None)
+
+
 def save_uploads(files, folder: Path) -> list[str]:
     paths = []
     for f in files or []:
@@ -51,22 +72,26 @@ def save_uploads(files, folder: Path) -> list[str]:
 
 
 # ---- sidebar: providers and inputs ------------------------------------------------
+nonce = st.session_state.setdefault("nonce", 0)
+
 with st.sidebar:
     st.title("🛡️ SecAgents")
+    st.button("↺ Reset", on_click=reset_app, use_container_width=True,
+              help="Clear the current results, chat and inputs. Scan history is kept.")
     st.caption("Five AI agents for detection, intel, scanning, response and compliance.")
     providers = get_router().available_providers()
     st.markdown("**LLM providers:** " + (", ".join(providers) if providers else "none (rule-based mode)"))
     st.caption(f"Claude model: `{settings.claude_model}` · fallback order: {' → '.join(settings.provider_order)}")
 
-    source = st.radio("Data to analyze", ["Demo attack scenario", "Upload my own files"])
+    source = st.radio("Data to analyze", ["Demo attack scenario", "Upload my own files"], key=f"source-{nonce}")
     inputs = default_inputs()
     if source == "Upload my own files":
         tmp = Path(tempfile.mkdtemp(prefix="secagents_"))
-        logs = st.file_uploader("Log files (auth.log, access.log, firewall.log)", accept_multiple_files=True)
-        code = st.file_uploader("Python source files", type=["py"], accept_multiple_files=True)
-        reqs = st.file_uploader("requirements.txt", type=["txt"])
-        docker = st.file_uploader("Dockerfile")
-        cfg = st.file_uploader("System config (YAML)", type=["yaml", "yml"])
+        logs = st.file_uploader("Log files (auth.log, access.log, firewall.log)", accept_multiple_files=True, key=f"logs-{nonce}")
+        code = st.file_uploader("Python source files", type=["py"], accept_multiple_files=True, key=f"code-{nonce}")
+        reqs = st.file_uploader("requirements.txt", type=["txt"], key=f"reqs-{nonce}")
+        docker = st.file_uploader("Dockerfile", key=f"docker-{nonce}")
+        cfg = st.file_uploader("System config (YAML)", type=["yaml", "yml"], key=f"cfg-{nonce}")
         (tmp / "code").mkdir()
         inputs = {
             "log_paths": save_uploads(logs, tmp),
@@ -76,7 +101,26 @@ with st.sidebar:
             "config_path": save_uploads([cfg], tmp)[0] if cfg else "",
         }
         save_uploads(code, tmp / "code")
+    scan_name = st.text_input("Scan name (optional)", key=f"name-{nonce}",
+                              placeholder="e.g. Prod web server, weekly check")
     run = st.button("▶ Run assessment", type="primary", use_container_width=True)
+
+    scans = history.list_scans()
+    active = st.session_state.get("scan", {}).get("id")
+    with st.expander(f"🕘 Scan history ({len(scans)})", expanded=False):
+        if not scans:
+            st.caption("No saved scans yet. Each assessment you run is saved here.")
+        for sc in scans:
+            when = sc["created_at"].replace("T", " ")[:16]
+            st.button(
+                f"{SEV_ICON.get(sc['risk'], '')} {sc['name']}",
+                key=f"open-{sc['id']}", on_click=open_scan, args=(sc["id"],), use_container_width=True,
+                type="primary" if sc["id"] == active else "secondary", help=f"{sc['source']} · open this scan",
+            )
+            st.caption(f"{when} UTC · {sc['incidents']} incidents")
+        if active:
+            st.button("Delete the open scan", key="del-active", on_click=delete_scan, args=(active,),
+                      use_container_width=True)
 
 # ---- run the graph with a live agent trace ----------------------------------------
 if run:
@@ -92,8 +136,11 @@ if run:
         status.update(label="Assessment complete", state="complete", expanded=False)
     state["trace"] = trace
     state["llm_calls"] = list(get_router().calls)
+    scan_id = history.save(state, scan_name, source)
     st.session_state["result"] = state
+    st.session_state["scan"] = {k: v for k, v in history.load(scan_id).items() if k != "result"}
     st.session_state.pop("chat", None)
+    st.rerun()  # refresh the sidebar history with the new scan
 
 result = st.session_state.get("result")
 if not result:
@@ -109,6 +156,10 @@ if not result:
         "| 📋 Policy Checker | Scores NIST 800-53, NIST CSF 2.0, ISO 27001 and SOC 2 |"
     )
     st.stop()
+
+scan = st.session_state.get("scan")
+if scan:
+    st.caption(f"🕘 **{scan['name']}** · {scan['source']} · {scan['created_at'].replace('T', ' ')[:16]} UTC")
 
 logs, vulns = result.get("log_findings", {}), result.get("vuln_findings", {})
 intel, ir, comp = result.get("threat_intel", {}), result.get("incident_plan", {}), result.get("compliance", {})
@@ -192,7 +243,7 @@ with tabs[4]:
             phase = s["phase"]
             st.subheader(phase)
         label = f"**{s['priority']}** {s['action']} · _{s['owner']}_" + (" · 🤖 suggested" if s.get("source") == "llm" else "")
-        st.checkbox(label, key=f"step-{s['step']}")
+        st.checkbox(label, key=f"step-{(scan or {}).get('id', '')}-{s['step']}")
         if s.get("command"):
             st.code(s["command"], language="bash")
 
