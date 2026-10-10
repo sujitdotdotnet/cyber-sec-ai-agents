@@ -71,3 +71,22 @@ def test_secret_scan_ignores_code_that_mentions_passwords(tmp_path):
     )
     (tmp_path / "bad.py").write_text("DB_PASSWORD = \"hunter2hunter2\"\n")
     assert [(f["file"], f["line"]) for f in scan_secrets(tmp_path)] == [("bad.py", 1)]
+
+
+def test_ignore_entries_prefill(tmp_path):
+    from secagents.repo_scan import ignore_entries
+
+    make_repo(tmp_path)
+    (tmp_path / ".ignore").write_text("# c\n.venv/\ndist/\n")
+    assert ignore_entries(str(tmp_path)) == [".venv/", "*.tmp", "/build", "dist/"]  # de-duplicated, no comments
+
+
+def test_box_text_drives_exclusions_when_ignore_files_off(tmp_path):
+    make_repo(tmp_path)
+    # box still lists the ignore-file entries, so the result matches the default behaviour
+    entries = ", ".join([".venv/", "*.tmp", "/build"])
+    inputs, _ = collect_repo_inputs(str(tmp_path), entries, use_ignore_files=False)
+    assert staged(inputs) == {"app/main.py", "tests/test_a.py"}
+    # removing an entry from the box scans that folder again
+    inputs, _ = collect_repo_inputs(str(tmp_path), ".venv/, *.tmp", use_ignore_files=False)
+    assert "build/out.py" in staged(inputs)

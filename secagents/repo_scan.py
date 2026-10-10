@@ -25,10 +25,10 @@ CODE_SUFFIXES = {".py", ".env", ".yaml", ".yml", ".json", ".cfg", ".ini"}  # wha
 class IgnoreRules:
     """Gitignore-style rules (comments, ``!`` negation, ``dir/``, anchored ``/path``, globs)."""
 
-    def __init__(self, patterns: list[str], extra_dirs: list[str] | None = None):
+    def __init__(self, patterns: list[str]):
         self.rules: list[tuple[bool, bool, bool, str]] = []  # (negated, dir_only, anchored, pattern)
         for raw in patterns:
-            line = raw.strip()
+            line = raw.strip().replace("\\", "/")  # accept Windows-style paths typed in the UI
             if not line or line.startswith("#"):
                 continue
             negated = line.startswith("!")
@@ -39,12 +39,9 @@ class IgnoreRules:
             line = line.lstrip("/")
             if line:
                 self.rules.append((negated, dir_only, anchored, line))
-        self.extra_dirs = [d.strip().strip("/\\").replace("\\", "/") for d in (extra_dirs or []) if d.strip()]
 
     def is_ignored(self, rel: str, is_dir: bool) -> bool:
         name = rel.rsplit("/", 1)[-1]
-        if is_dir and any(fnmatch.fnmatch(name, d) or fnmatch.fnmatch(rel, d) for d in self.extra_dirs):
-            return True
         ignored = False
         for negated, dir_only, anchored, pat in self.rules:
             if dir_only and not is_dir:
@@ -54,13 +51,24 @@ class IgnoreRules:
         return ignored
 
 
-def load_ignore_rules(root: Path, extra_dirs: list[str] | None = None) -> IgnoreRules:
-    patterns: list[str] = []
+def ignore_entries(folder: str) -> list[str]:
+    """Active entries (no comments / blanks, de-duplicated) from the folder's .gitignore and .ignore."""
+    root = Path(folder).expanduser()
+    seen: dict[str, None] = {}
     for name in IGNORE_FILES:
         f = root / name
         if f.is_file():
-            patterns += f.read_text(encoding="utf-8", errors="ignore").splitlines()
-    return IgnoreRules(patterns, extra_dirs)
+            for line in f.read_text(encoding="utf-8", errors="ignore").splitlines():
+                line = line.strip()
+                if line and not line.startswith("#") and "," not in line:  # the UI list is comma-separated
+                    seen[line] = None
+    return list(seen)
+
+
+def load_ignore_rules(root: Path, extra: list[str] | None = None, use_ignore_files: bool = True) -> IgnoreRules:
+    """Ignore-file rules (optional) followed by user entries, which are gitignore-style patterns too."""
+    patterns = ignore_entries(str(root)) if use_ignore_files else []
+    return IgnoreRules(patterns + list(extra or []))
 
 
 _PICKER = (
@@ -103,12 +111,18 @@ def _shallowest(candidates: list[str]) -> str | None:
     return min(candidates, key=lambda r: (r.count("/"), r)) if candidates else None
 
 
-def collect_repo_inputs(folder: str, exclude_text: str = "") -> tuple[dict[str, Any], dict[str, int]]:
-    """Build agent inputs from a repository folder. Returns (inputs, summary counts)."""
+def collect_repo_inputs(
+    folder: str, exclude_text: str = "", use_ignore_files: bool = True
+) -> tuple[dict[str, Any], dict[str, int]]:
+    """Build agent inputs from a repository folder. Returns (inputs, summary counts).
+
+    ``use_ignore_files=False`` is for callers whose ``exclude_text`` already holds the ignore-file
+    entries (the dashboard pre-fills it, so what the user sees is exactly what is excluded).
+    """
     root = Path(folder).expanduser().resolve()
     if not root.is_dir():
         raise FileNotFoundError(f"Not a folder: {folder}")
-    rules = load_ignore_rules(root, parse_excludes(exclude_text))
+    rules = load_ignore_rules(root, parse_excludes(exclude_text), use_ignore_files)
 
     logs: list[str] = []
     code_files: list[str] = []

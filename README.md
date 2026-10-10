@@ -55,11 +55,11 @@ cp .env.example .env        # add ANTHROPIC_API_KEY / OPENAI_API_KEY / OPENROUTE
 
 streamlit run app/streamlit_app.py     # dashboard
 python -m secagents --json results.json  # CLI: writes security_report.md
-pytest                                  # 20 tests, no API keys needed
+pytest                                  # 22 tests, no API keys needed
 ```
 
 The CLI accepts your own data: `python -m secagents --logs /var/log/auth.log access.log --code ./src --requirements requirements.txt --dockerfile Dockerfile --config my_config.yaml`.
-The dashboard also has an **Upload my own files** mode, a **Scan a whole folder** option (type a path or press **Browse...**; `.gitignore` / `.ignore` rules are honoured and a comma-separated box excludes extra folders) and an **Ask** tab for questions such as *"Are we affected by Log4Shell?"*.
+The dashboard also has an **Upload my own files** mode, a **Scan a whole folder** option (type a path or press **Browse...**; the folder's `.gitignore` / `.ignore` entries are pre-filled into an editable, comma-separated exclude box) and an **Ask** tab for questions such as *"Are we affected by Log4Shell?"*.
 
 Every assessment is saved to `.history/` (set `HISTORY_DIR` to move it) and listed under **Scan history** in the sidebar, using the name you give it or an automatic one (source, time, risk). Click a scan to reopen it. **Reset**, under the title, clears the current results, chat and inputs; saved history is kept.
 
@@ -191,7 +191,7 @@ Cyber content can trip provider classifiers. Claude calls use server-side refusa
 Pick **Upload my own files** and upload logs, code, `requirements.txt`, a Dockerfile and a config, or use **Scan a whole folder**: type a path or press **Browse...**. The folder scan finds logs, Python code, requirements, a Dockerfile and a config automatically.
 
 **What does the folder scan skip?**
-Anything matched by the folder's `.gitignore` or `.ignore`, plus `.git`. The **Exclude folders** box takes extra comma-separated names or relative paths (for example `tests, docs, build`). If the folder has no ignore file, put `.venv` and `node_modules` in the exclude box.
+`.git`, plus everything in the folder's `.gitignore` and `.ignore`. Those entries are pre-filled into the **Exclude folders** box (the label says so) whenever you pick a folder, so you can see exactly what is skipped. Add your own comma-separated names, relative paths or wildcards (for example `tests, docs, build`), or delete an entry to scan it after all. If the folder has no ignore file, add `.venv` and `node_modules` yourself.
 
 **Does the Browse button work on a remote server?**
 It opens the folder chooser on the machine running Streamlit. That is fine locally; on a remote host, type the path instead.

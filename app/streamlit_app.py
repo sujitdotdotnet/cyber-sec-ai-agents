@@ -21,7 +21,7 @@ from secagents.config import settings  # noqa: E402
 from secagents.graph import default_inputs, stream  # noqa: E402
 from secagents.llm import get_router  # noqa: E402
 from secagents.qa import ask  # noqa: E402
-from secagents.repo_scan import browse_folder, collect_repo_inputs  # noqa: E402
+from secagents.repo_scan import browse_folder, collect_repo_inputs, ignore_entries  # noqa: E402
 
 st.set_page_config(page_title="Cyber Security AI Agent", page_icon="🛡️", layout="wide")
 # wider sidebar so the title fits on one line (only while it is open, so collapsing still works)
@@ -166,9 +166,16 @@ with st.sidebar:
                   use_container_width=True, help="Open a folder chooser on this machine")
         if st.session_state.pop("browse_failed", False):
             st.warning("Couldn't open a folder dialog here (no display?). Type the path instead.")
-        repo_excludes = st.text_input(
-            "Exclude folders (comma-separated)", key=f"exclude-{nonce}", placeholder="e.g. tests, docs, build",
-            help="Added on top of the .gitignore / .ignore rules. Folder names or relative paths; wildcards allowed.",
+        # pre-fill with the folder's .gitignore / .ignore entries whenever the folder changes
+        exclude_key = f"exclude-{nonce}"
+        if st.session_state.get(f"prefilled-{nonce}") != repo_folder:
+            st.session_state[f"prefilled-{nonce}"] = repo_folder
+            st.session_state[exclude_key] = ", ".join(ignore_entries(repo_folder)) if repo_folder.strip() else ""
+        repo_excludes = st.text_area(
+            "Exclude folders (comma-separated) · .gitignore / .ignore items are excluded by default",
+            key=exclude_key, height=110, placeholder="e.g. tests, docs, build",
+            help="Pre-filled from the folder's .gitignore and .ignore files, so everything listed is skipped. "
+                 "Add your own folders (names, relative paths or wildcards) or remove entries to scan them.",
         )
     scan_name = st.text_input("Scan name (optional)", key=f"name-{nonce}",
                               placeholder="e.g. Prod web server, weekly check")
@@ -194,7 +201,7 @@ with st.sidebar:
 # ---- run the graph with a live agent trace ----------------------------------------
 if run and repo_folder.strip():
     try:
-        repo_inputs, found = collect_repo_inputs(repo_folder.strip(), repo_excludes)
+        repo_inputs, found = collect_repo_inputs(repo_folder.strip(), repo_excludes, use_ignore_files=False)
     except OSError as exc:
         st.error(str(exc))
         st.stop()
