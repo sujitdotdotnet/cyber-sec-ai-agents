@@ -86,13 +86,26 @@ def regex_sast(code_path: Path, rules=FALLBACK_SAST) -> list[dict[str, Any]]:
     return out
 
 
+def _is_literal_secret(title: str, m: re.Match[str], suffix: str) -> bool:
+    """Reject password 'matches' whose value is code (f-string braces, calls, indexing, ...) rather than a literal."""
+    if title != "Hardcoded password":
+        return True
+    value = m.group(2)
+    if any(c in value for c in "{}()[]$<>,"):
+        return False
+    if suffix == ".py":  # in Python source a real literal is quoted; a bare name is just a variable
+        return m.string[m.start(2) - 1] in "\"'"
+    return True
+
+
 def scan_secrets(root: Path) -> list[dict[str, Any]]:
     out, seen = [], set()
     files = [root] if root.is_file() else [p for p in root.rglob("*") if p.is_file() and p.suffix in {".py", ".env", ".yaml", ".yml", ".json", ".cfg", ".ini", ""}]
     for f in files:
         for n, line in enumerate(f.read_text(errors="replace").splitlines(), 1):
             for title, rx in SECRET_RULES:
-                if rx.search(line) and (f.name, n) not in seen:
+                m = rx.search(line)
+                if m and _is_literal_secret(title, m, f.suffix) and (f.name, n) not in seen:
                     seen.add((f.name, n))
                     redacted = re.sub(r"([\"'=:]\s*[\"']?)([^\s\"']{4})[^\s\"']*", r"\1\2****", line.strip())
                     out.append(_finding(category="secret", tool="secret-scan", rule="SECRET", title=f"{title} committed to source",

@@ -60,3 +60,14 @@ def test_extra_excludes(tmp_path):
 def test_missing_folder_raises(tmp_path):
     with pytest.raises(FileNotFoundError):
         collect_repo_inputs(str(tmp_path / "nope"))
+
+
+def test_secret_scan_ignores_code_that_mentions_passwords(tmp_path):
+    from secagents.agents.vuln_scanner import scan_secrets
+
+    (tmp_path / "ok.py").write_text(
+        "msg = f\"PasswordAuthentication={_g(c, 'ssh.password_authentication')}\"\n"
+        "password = get_password()\nconn(password=password)\n"
+    )
+    (tmp_path / "bad.py").write_text("DB_PASSWORD = \"hunter2hunter2\"\n")
+    assert [(f["file"], f["line"]) for f in scan_secrets(tmp_path)] == [("bad.py", 1)]
