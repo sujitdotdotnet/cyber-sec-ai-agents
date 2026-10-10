@@ -40,6 +40,7 @@ class Settings:
     knowledge_dir: Path = ROOT / "knowledge"
     samples_dir: Path = ROOT / "samples"
     chroma_dir: Path = field(default_factory=lambda: Path(_env("CHROMA_DIR", str(ROOT / ".chroma"))))
+    history_dir: Path = field(default_factory=lambda: Path(_env("HISTORY_DIR", str(ROOT / ".history"))))
 
     @property
     def has_any_llm(self) -> bool:

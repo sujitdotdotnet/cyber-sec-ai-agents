@@ -61,6 +61,8 @@ pytest                                  # 12 tests, no API keys needed
 The CLI accepts your own data: `python -m secagents --logs /var/log/auth.log access.log --code ./src --requirements requirements.txt --dockerfile Dockerfile --config my_config.yaml`.
 The dashboard also has an **Upload my own files** mode and an **Ask** tab for questions such as *"Are we affected by Log4Shell?"*.
 
+Every assessment is saved to `.history/` (set `HISTORY_DIR` to move it) and listed under **Scan history** in the sidebar, using the name you give it or an automatic one (source, time, risk). Click a scan to reopen it. **Reset**, under the title, clears the current results, chat and inputs; saved history is kept.
+
 ## The demo scenario
 
 `samples/` contains a seeded attack story (regenerate with `python samples/generate_logs.py`):
