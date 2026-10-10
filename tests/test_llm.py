@@ -11,7 +11,7 @@ def make_router(**overrides):
 
 
 def test_failover_to_next_provider(monkeypatch):
-    router = make_router()
+    router = make_router(provider_order=("anthropic", "openai", "openrouter"))
 
     def boom(*a, **k):
         raise RuntimeError("Claude declined the request")
@@ -21,6 +21,13 @@ def test_failover_to_next_provider(monkeypatch):
     res = router.complete("sys", "hi", agent="test")
     assert res.provider == "openai" and res.text == "ok from openai"
     assert router.calls == [{"agent": "test", "provider": "openai", "model": "m"}]
+
+
+def test_default_order_and_preferred_provider():
+    router = make_router(provider_order=("openrouter", "anthropic", "openai"))
+    assert router.available_providers() == ["openrouter", "anthropic", "openai"]
+    router.preferred = "openai"
+    assert router.available_providers() == ["openai", "openrouter", "anthropic"]
 
 
 def test_provider_order_and_missing_keys():

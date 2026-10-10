@@ -25,7 +25,7 @@ class Settings:
     # Order in which providers are tried; a provider without a key is skipped.
     provider_order: tuple[str, ...] = field(
         default_factory=lambda: tuple(
-            p.strip() for p in _env("LLM_PROVIDER_ORDER", "anthropic,openai,openrouter").split(",") if p.strip()
+            p.strip() for p in _env("LLM_PROVIDER_ORDER", "openrouter,anthropic,openai").split(",") if p.strip()
         )
     )
     claude_model: str = field(default_factory=lambda: _env("CLAUDE_MODEL", "claude-opus-5-5"))

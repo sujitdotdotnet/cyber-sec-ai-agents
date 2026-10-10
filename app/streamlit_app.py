@@ -22,7 +22,12 @@ from secagents.graph import default_inputs, stream  # noqa: E402
 from secagents.llm import get_router  # noqa: E402
 from secagents.qa import ask  # noqa: E402
 
-st.set_page_config(page_title="SecAgents", page_icon="🛡️", layout="wide")
+st.set_page_config(page_title="Cyber Security AI Agent", page_icon="🛡️", layout="wide")
+# wider sidebar so the title fits on one line (only while it is open, so collapsing still works)
+st.markdown(
+    "<style>[data-testid='stSidebar'][aria-expanded='true']{min-width:420px;max-width:420px}</style>",
+    unsafe_allow_html=True,
+)
 
 SEV_ICON = {"CRITICAL": "🔴", "HIGH": "🟠", "MEDIUM": "🟡", "LOW": "🔵", "INFO": "⚪"}
 STATUS_ICON = {"PASS": "✅", "PARTIAL": "🟡", "FAIL": "❌"}
@@ -36,6 +41,36 @@ AGENT_LABEL = {
     "reporter": "📝 Reporter",
 }
 BAR_COLOR = "#2a78d6"
+
+
+PIPELINE = ["log_monitor", "vuln_scanner", "threat_intel", "incident_response", "policy_checker", "reporter"]
+PIPELINE_CSS = """
+<style>
+.sa-pipe{display:flex;flex-wrap:wrap;gap:8px;margin:4px 0 10px}
+.sa-chip{padding:6px 12px;border-radius:999px;border:1px solid rgba(128,128,128,.35);font-size:.85rem;opacity:.55}
+.sa-chip.done{opacity:1;border-color:#2e9e5b;color:#2e9e5b}
+.sa-chip.active{opacity:1;border-color:#2a78d6;background:rgba(42,120,214,.14);font-weight:600;
+  animation:sa-pulse 1.2s ease-in-out infinite}
+.sa-dots span{animation:sa-blink 1.4s infinite both;font-weight:700}
+.sa-dots span:nth-child(2){animation-delay:.2s}
+.sa-dots span:nth-child(3){animation-delay:.4s}
+.sa-spin{display:inline-block;animation:sa-rot 1s linear infinite}
+@keyframes sa-pulse{0%,100%{box-shadow:0 0 0 0 rgba(42,120,214,.55)}50%{box-shadow:0 0 0 8px rgba(42,120,214,0)}}
+@keyframes sa-blink{0%,80%,100%{opacity:.2}40%{opacity:1}}
+@keyframes sa-rot{to{transform:rotate(360deg)}}
+</style>
+"""
+
+
+def pipeline_html(active: str | None, done: set[str]) -> str:
+    chips = []
+    for name in PIPELINE:
+        state = "active" if name == active else "done" if name in done else ""
+        label = AGENT_LABEL.get(name, name)
+        spin = '<span class="sa-spin">⚙️</span> ' if state == "active" else ("✓ " if state == "done" else "")
+        dots = '<span class="sa-dots"><span>.</span><span>.</span><span>.</span></span>' if state == "active" else ""
+        chips.append(f'<div class="sa-chip {state}">{spin}{label}{dots}</div>')
+    return PIPELINE_CSS + f'<div class="sa-pipe">{"".join(chips)}</div>'
 
 
 def sev(s: str) -> str:
@@ -75,13 +110,20 @@ def save_uploads(files, folder: Path) -> list[str]:
 nonce = st.session_state.setdefault("nonce", 0)
 
 with st.sidebar:
-    st.title("🛡️ SecAgents")
+    st.title("🛡️ Cyber Security AI Agent")
     st.button("↺ Reset", on_click=reset_app, use_container_width=True,
               help="Clear the current results, chat and inputs. Scan history is kept.")
     st.caption("Five AI agents for detection, intel, scanning, response and compliance.")
-    providers = get_router().available_providers()
-    st.markdown("**LLM providers:** " + (", ".join(providers) if providers else "none (rule-based mode)"))
-    st.caption(f"Claude model: `{settings.claude_model}` · fallback order: {' → '.join(settings.provider_order)}")
+    router = get_router()
+    options = list(settings.provider_order)
+    router.preferred = st.selectbox(
+        "LLM provider", options, index=options.index("openrouter") if "openrouter" in options else 0,
+        key=f"provider-{nonce}", help="Tried first; the others are used as fallbacks if it fails.",
+    )
+    providers = router.available_providers()
+    st.markdown("**Active providers:** " + (", ".join(providers) if providers else "none (rule-based mode)"))
+    st.caption(f"Model: `{router.model_for(router.preferred)}` ({router.preferred})")
+    st.caption("Fallback order: " + " → ".join(f"{p} (`{router.model_for(p)}`)" for p in router.ordered_providers()))
 
     source = st.radio("Data to analyze", ["Demo attack scenario", "Upload my own files"], key=f"source-{nonce}")
     inputs = default_inputs()
@@ -127,13 +169,24 @@ if run:
     state: dict = {}
     trace: list = []
     get_router().calls.clear()
+    done: set[str] = set()
     with st.status("Agents working...", expanded=True) as status:
+        banner = st.empty()
+        banner.markdown(pipeline_html(None, done), unsafe_allow_html=True)
         for node, update in stream(inputs):
+            if node in PIPELINE:
+                done.add(node)
+            if node == "supervisor" and update.get("next_agent"):
+                # the supervisor just dispatched this agent, so it is the one working now
+                nxt = update["next_agent"]
+                banner.markdown(pipeline_html(nxt, done), unsafe_allow_html=True)
+                status.update(label=f"{AGENT_LABEL.get(nxt, nxt)} working...", expanded=True)
             for t in update.get("trace", []):
                 trace.append(t)
                 st.write(f"**{AGENT_LABEL.get(t['agent'], t['agent'])}**: {t['message']}")
             state.update({k: v for k, v in update.items() if k not in ("trace", "completed")})
-        status.update(label="Assessment complete", state="complete", expanded=False)
+        banner.markdown(pipeline_html(None, done), unsafe_allow_html=True)
+        status.update(label="Assessment complete", state="complete", expanded=True)
     state["trace"] = trace
     state["llm_calls"] = list(get_router().calls)
     scan_id = history.save(state, scan_name, source)

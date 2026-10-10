@@ -32,8 +32,25 @@ class LLMRouter:
         self.cfg = cfg or default_settings
         self._clients: dict[str, Any] = {}
         self.calls: list[dict[str, str]] = []  # lightweight trace for the dashboard
+        self.preferred: str | None = None  # tried first when set; the rest follow provider_order
 
     # ---- provider plumbing -------------------------------------------------
+    def ordered_providers(self) -> list[str]:
+        """Configured fallback order, with the preferred provider moved to the front."""
+        order = list(self.cfg.provider_order)
+        if self.preferred in order:
+            order.remove(self.preferred)
+            order.insert(0, self.preferred)
+        return order
+
+    def model_for(self, provider: str) -> str:
+        """Model configured (via .env) for a provider."""
+        return {
+            "anthropic": self.cfg.claude_model,
+            "openai": self.cfg.openai_model,
+            "openrouter": self.cfg.openrouter_model,
+        }.get(provider, "")
+
     def available_providers(self) -> list[str]:
         if self.cfg.offline:
             return []
@@ -42,7 +59,7 @@ class LLMRouter:
             "openai": self.cfg.openai_api_key,
             "openrouter": self.cfg.openrouter_api_key,
         }
-        return [p for p in self.cfg.provider_order if keys.get(p)]
+        return [p for p in self.ordered_providers() if keys.get(p)]
 
     def _client(self, provider: str):
         if provider not in self._clients:
