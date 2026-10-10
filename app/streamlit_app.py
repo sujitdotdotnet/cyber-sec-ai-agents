@@ -21,6 +21,7 @@ import streamlit as st
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from secagents import history  # noqa: E402
+from secagents.exporters import MIME as EXPORT_MIME, export  # noqa: E402
 from secagents.config import settings  # noqa: E402
 from secagents.graph import default_inputs, stream  # noqa: E402
 from secagents.live import (  # noqa: E402
@@ -635,7 +636,16 @@ with tabs[6]:
 
 with tabs[7]:
     report = result.get("report_md", "")
-    a, b = st.columns(2)
-    a.download_button("⬇ Download report (Markdown)", report, "security_report.md", use_container_width=True)
-    b.download_button("⬇ Download results (JSON)", json.dumps(result, indent=2, default=str), "security_results.json", use_container_width=True)
+    meta = scan or {}
+    st.caption("Download the report as Word, Excel (one sheet per table), PDF or Markdown, or the raw results as JSON.")
+    cols = st.columns(5)
+    cols[0].download_button("⬇ Word (.docx)", data=lambda: export("docx", result, meta), file_name="security_report.docx",
+                            mime=EXPORT_MIME["docx"], on_click="ignore", use_container_width=True)
+    cols[1].download_button("⬇ Excel (.xlsx)", data=lambda: export("xlsx", result, meta), file_name="security_report.xlsx",
+                            mime=EXPORT_MIME["xlsx"], on_click="ignore", use_container_width=True)
+    cols[2].download_button("⬇ PDF", data=lambda: export("pdf", result, meta), file_name="security_report.pdf",
+                            mime=EXPORT_MIME["pdf"], on_click="ignore", use_container_width=True)  # built only when clicked
+    cols[3].download_button("⬇ Markdown", report, "security_report.md", on_click="ignore", use_container_width=True)
+    cols[4].download_button("⬇ JSON", json.dumps(result, indent=2, default=str), "security_results.json",
+                            on_click="ignore", use_container_width=True)
     st.markdown(report)

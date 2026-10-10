@@ -54,8 +54,8 @@ pip install -r requirements.txt
 cp .env.example .env        # add ANTHROPIC_API_KEY / OPENAI_API_KEY / OPENROUTER_API_KEY
 
 streamlit run app/streamlit_app.py     # dashboard
-python -m secagents --json results.json  # CLI: writes security_report.md
-pytest                                  # 43 tests, no API keys needed
+python -m secagents --json results.json  # CLI: writes security_report.md (add --docx r.docx --xlsx r.xlsx --pdf r.pdf)
+pytest                                  # 49 tests, no API keys needed
 ```
 
 The CLI accepts your own data: `python -m secagents --logs /var/log/auth.log access.log --code ./src --requirements requirements.txt --dockerfile Dockerfile --config my_config.yaml`.
@@ -96,6 +96,7 @@ secagents/
   repo_scan.py   Folder scan: ignore rules, exclusions, staging
   live.py        Live scan: log tailer, alert de-duplication, demo replay, live_logs/ helpers
   report.py      Markdown report
+  exporters.py   Word / Excel / PDF exports of the same report data
   qa.py          Ask-the-agents Q&A
 knowledge/       cves.jsonl, attack.jsonl, controls.jsonl, threat_feed.json
 samples/         demo logs, vulnerable app, system config, live_examples/ (paste-in attack lines)
@@ -131,7 +132,7 @@ Requirement: *an AI-powered cybersecurity system made of multiple agents that mo
 | 11 | RAG and agents working together | ✅ | Chroma store with an agentic retriever that grades results, rewrites the query and retries (`rag/`) |
 | 12 | Real-time threat detection, analysis and response | ✅ | **Live scan** switch next to *Run assessment*: follows the log files as they grow, alerts the first time each attack appears and refreshes the full agent pipeline and dashboard counters on new alerts (`live.py`). It runs while the dashboard is open; it is not a background service |
 | 13 | Suggest fixes automatically | ✅ | Code fix suggestions, incident playbook, compliance roadmap, all LLM-written with rule-based fallbacks |
-| 14 | Useful for security engineers, DevOps and IT teams | ✅ | Streamlit dashboard, CLI (`python -m secagents`), Markdown and JSON report export, folder scan, scan history |
+| 14 | Useful for security engineers, DevOps and IT teams | ✅ | Streamlit dashboard, CLI (`python -m secagents`), report export to Word, Excel, PDF, Markdown and JSON, folder scan, scan history |
 
 ✅ implemented · 🟡 partly implemented · ❌ not implemented
 
@@ -213,6 +214,14 @@ Pick **Upload my own files** and upload logs, code, `requirements.txt`, a Docker
 
 **Does the Browse button work on a remote server?**
 It opens the folder chooser on the machine running Streamlit. That is fine locally; on a remote host, type the path instead.
+
+**Can I download the report as Word, Excel or PDF?**
+Yes. The **📝 Report** tab has **Word (.docx)**, **Excel (.xlsx)**, **PDF**, **Markdown** and **JSON** buttons, and the CLI takes `--docx`, `--xlsx` and `--pdf` paths. All formats are built from the same data as the Markdown report, so the numbers match. Files are generated when you click, so the page stays fast.
+- **Word and PDF** (landscape A4): executive summary, the incident briefing, then each agent's section with colour-coded tables (severity cells are red / orange / yellow / blue), the playbook, framework scores, ranked fixes and the controls that are not passing. Word headers repeat on every page of a long table; the PDF has page numbers.
+- **Excel**: one sheet per table (Summary, Detections, CVEs, Attack correlation, Exploit attempts, IOCs, Findings, Incidents, Playbook, Compliance, Fixes, Control gaps, Checks, Inventory) plus a Narrative sheet. It has more columns than the documents (evidence, first/last seen, snippets, rules), frozen header rows, filters, colour-coded severities, and numbers stay numeric so you can sort and pivot.
+
+**Is it safe to open exports that contain log text?**
+Report text comes from logs and code, which attackers can influence, so exports treat it as untrusted: Excel cells that start with `=` are stored as plain text and can never run as formulas, control characters are stripped (they make Word files invalid), and PDF markup is escaped. The PDF uses standard fonts, so emoji and a few symbols are replaced or dropped there; Word and Excel keep them.
 
 **Where are results stored?**
 Each assessment is saved in `.history/` (change with `HISTORY_DIR`) and appears under **Scan history**. **Reset** clears the current view but keeps history.
