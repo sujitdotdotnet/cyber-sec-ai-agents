@@ -1,0 +1,45 @@
+# Snapshot of the demo environment's security settings, read by the Policy Checker Agent.
+environment: production
+host: web-01
+os:
+  distro: ubuntu-22.04
+  packages:
+    openssh: "8.9p1"
+    openssl: "3.0.2"
+    sudo: "1.9.9"
+    xz-utils: "5.2.5"
+authentication:
+  mfa_enabled: false
+  mfa_enforced_for_admins: false
+  password_min_length: 8
+  password_complexity: true
+  max_failed_logins: 0        # 0 = no lockout
+ssh:
+  permit_root_login: "yes"
+  password_authentication: "yes"
+  login_grace_time: 120
+logging:
+  centralized: true
+  siem: elastic
+  retention_days: 7
+monitoring:
+  ids_enabled: false
+network:
+  firewall_default_policy: allow
+  tls_min_version: "1.2"
+storage:
+  encryption_at_rest: true
+backups:
+  enabled: true
+  last_restore_test_days_ago: 120
+vulnerability_management:
+  scan_frequency_days: 90
+  critical_patch_sla_days: 60
+incident_response:
+  plan_documented: true
+  last_tested_days_ago: 540
+development:
+  code_review_required: true
+  debug_mode_in_production: true
+containers:
+  run_as_root: true

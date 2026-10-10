@@ -1,0 +1,10 @@
+.env
+.venv/
+venv/
+__pycache__/
+*.pyc
+.chroma/
+.pytest_cache/
+security_report.md
+security_results.json
+.history/
