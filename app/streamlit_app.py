@@ -231,15 +231,15 @@ with st.sidebar:
             "config_path": save_uploads([cfg], tmp)[0] if cfg else "",
         }
         save_uploads(code, tmp / "code")
-        st.markdown("**Or scan a whole folder**")
+        st.markdown("**Or scan a whole folder (Works Locally only)**")
         repo_key = f"repo-{nonce}"
         repo_folder = st.text_input(
-            "Repository folder path", key=repo_key, placeholder=r"e.g. C:\projects\my-app",
+            "Repository folder path (Works Locally only)", key=repo_key, placeholder=r"e.g. C:\projects\my-app",
             help="Type a path or use Browse. The folder is on the machine running this app. Logs, Python code, "
                  "requirements, Dockerfile and config are found automatically. Files matched by the folder's "
                  ".gitignore / .ignore are skipped.",
         )
-        st.button("📂 Browse...", key=f"browse-{nonce}", on_click=pick_folder, args=(repo_key,),
+        st.button("📂 Browse...(Works Locally only)", key=f"browse-{nonce}", on_click=pick_folder, args=(repo_key,),
                   use_container_width=True, help="Open a folder chooser on this machine")
         if st.session_state.pop("browse_failed", False):
             st.warning("Couldn't open a folder dialog here (no display?). Type the path instead.")
