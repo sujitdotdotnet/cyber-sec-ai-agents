@@ -218,26 +218,28 @@ def analyze_firewall(lines: list[str], source: str) -> list[dict[str, Any]]:
     return events
 
 
-def detect(paths: list[str]) -> list[dict[str, Any]]:
+def detect_named(sources: list[tuple[str, list[str]]]) -> list[dict[str, Any]]:
+    """Run the detectors over (file name, lines) pairs; the name picks the parser."""
     events: list[dict[str, Any]] = []
-    for p in paths:
-        path = Path(p)
-        if not path.exists():
-            continue
-        lines = path.read_text(errors="replace").splitlines()
-        name = path.name.lower()
+    for file_name, lines in sources:
+        name = file_name.lower()
         if "auth" in name or "secure" in name:
-            events += analyze_auth(lines, path.name)
+            events += analyze_auth(lines, file_name)
         elif "access" in name or "nginx" in name or "apache" in name:
-            events += analyze_web(lines, path.name)
+            events += analyze_web(lines, file_name)
         elif "firewall" in name or "ufw" in name or "iptables" in name:
-            events += analyze_firewall(lines, path.name)
+            events += analyze_firewall(lines, file_name)
         else:  # unknown file: try every parser
-            events += analyze_auth(lines, path.name) + analyze_web(lines, path.name) + analyze_firewall(lines, path.name)
+            events += analyze_auth(lines, file_name) + analyze_web(lines, file_name) + analyze_firewall(lines, file_name)
     events = sort_by_severity(events)
     for i, e in enumerate(events, 1):
         e["id"] = f"LOG-{i:03d}"
     return events
+
+
+def detect(paths: list[str]) -> list[dict[str, Any]]:
+    sources = [(Path(p).name, Path(p).read_text(errors="replace").splitlines()) for p in paths if Path(p).exists()]
+    return detect_named(sources)
 
 
 NARRATIVE_SYSTEM = (

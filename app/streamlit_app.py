@@ -6,8 +6,12 @@
 from __future__ import annotations
 
 import json
+import logging
 import sys
 import tempfile
+import time
+from contextlib import contextmanager
+from datetime import datetime
 from pathlib import Path
 
 import altair as alt
@@ -19,16 +23,26 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from secagents import history  # noqa: E402
 from secagents.config import settings  # noqa: E402
 from secagents.graph import default_inputs, stream  # noqa: E402
+from secagents.live import (  # noqa: E402
+    LIVE_LOG_FILES, LogTailer, ReplayFeed, append_log_lines, clear_live_logs, live_log_paths, to_alert,
+)
 from secagents.llm import get_router  # noqa: E402
 from secagents.qa import ask  # noqa: E402
-from secagents.repo_scan import browse_folder, collect_repo_inputs, ignore_entries  # noqa: E402
+from secagents.rag import embedding_backend, set_embedding_key  # noqa: E402
+from secagents.repo_scan import browse_folder, collect_repo_inputs, find_logs, ignore_entries  # noqa: E402
 
 st.set_page_config(page_title="Cyber Security AI Agent", page_icon="🛡️", layout="wide")
-# wider sidebar so the title fits on one line (only while it is open, so collapsing still works)
-st.markdown(
-    "<style>[data-testid='stSidebar'][aria-expanded='true']{min-width:420px;max-width:420px}</style>",
-    unsafe_allow_html=True,
-)
+
+
+class _IgnoreBrowserDisconnect(logging.Filter):
+    """Drop asyncio's 'ConnectionResetError [WinError 10054]' noise: the browser closed or reloaded the page."""
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        return not (record.exc_info and isinstance(record.exc_info[1], ConnectionResetError))
+
+
+if not any(isinstance(f, _IgnoreBrowserDisconnect) for f in logging.getLogger("asyncio").filters):
+    logging.getLogger("asyncio").addFilter(_IgnoreBrowserDisconnect())
 
 SEV_ICON = {"CRITICAL": "🔴", "HIGH": "🟠", "MEDIUM": "🟡", "LOW": "🔵", "INFO": "⚪"}
 STATUS_ICON = {"PASS": "✅", "PARTIAL": "🟡", "FAIL": "❌"}
@@ -42,6 +56,38 @@ AGENT_LABEL = {
     "reporter": "📝 Reporter",
 }
 BAR_COLOR = "#2a78d6"
+HISTORY_BOX_PX, HISTORY_SCROLL_AFTER = 320, 4  # Scan history: height of the scrolling list, and how many scans before it scrolls
+LIVE_ASSESS_GAP = 20  # minimum seconds between automatic dashboard refreshes in Live scan
+BANNER_STILL = Path(__file__).resolve().parent / "assets" / "banner_still.png"  # shown when idle
+BANNER_SCAN = Path(__file__).resolve().parent / "assets" / "banner_scan.gif"  # shown while scanning
+# Page-wide CSS, injected once from the sidebar so no stray element sits above the banner in the main area.
+APP_CSS = """
+<style>
+/* banner flush under the toolbar: Streamlit's default top padding (6rem) leaves a blank band above it */
+[data-testid="stMainBlockContainer"], .block-container{padding-top:3.75rem}
+/* wider sidebar so the title fits on one line (only while open, so collapsing still works) */
+[data-testid="stSidebar"][aria-expanded="true"]{min-width:420px;max-width:420px}
+/* status dot: red and still when idle, green and pulsing while any scan is running */
+.sa-dot{display:inline-block;width:12px;height:12px;border-radius:50%;background:#d64545;margin-right:8px;vertical-align:middle}
+.sa-dot.on{background:#2ecc71;animation:sa-greenpulse 1.2s ease-in-out infinite}
+.sa-tagline{font-size:1.35rem;font-weight:600;letter-spacing:.2px;line-height:1.35;margin:-.25rem 0 .75rem}
+.sa-live{display:inline-flex;align-items:center;font-weight:700;color:#2ecc71;margin-bottom:6px}
+@keyframes sa-greenpulse{0%,100%{box-shadow:0 0 0 0 rgba(46,204,113,.65)}50%{box-shadow:0 0 0 8px rgba(46,204,113,0)}}
+</style>
+"""
+
+
+def tagline_color() -> str:
+    """Green with enough contrast on the current page theme: bright on dark, deeper on light."""
+    try:
+        return "#0f8a43" if st.context.theme.type == "light" else "#3ddc84"
+    except Exception:  # noqa: BLE001 - theme unknown (older Streamlit / embedded): the bright green suits the default dark theme
+        return "#3ddc84"
+
+
+def scan_status_html(scanning: bool, detail: str) -> str:
+    return (f'<div><span class="sa-dot{" on" if scanning else ""}"></span>'
+            f'<b>{"Scanning" if scanning else "Idle"}</b> <span style="opacity:.7">· {detail}</span></div>')
 
 
 PIPELINE = ["log_monitor", "vuln_scanner", "threat_intel", "incident_response", "policy_checker", "reporter"]
@@ -98,6 +144,19 @@ def delete_scan(scan_id: str) -> None:
         st.session_state.pop("scan", None)
 
 
+def reset_live() -> None:
+    """Toggling Live scan starts from scratch: forget read positions, seen attacks and alerts."""
+    st.session_state.pop("live", None)
+
+
+def append_pasted(text_key: str, target_key: str) -> None:
+    """Button callback: write the pasted lines to the chosen live log, then empty the box."""
+    text, target = st.session_state.get(text_key, ""), st.session_state.get(target_key, LIVE_LOG_FILES[0])
+    n = append_log_lines(target, text)
+    st.session_state[text_key] = ""
+    st.session_state["paste_note"] = f"Appended {n} line(s) to {target}." if n else "Nothing to append: paste some log lines first."
+
+
 def pick_folder(key: str) -> None:
     """Button callback: fill the path box from a native folder dialog (runs before the widget redraws)."""
     chosen = browse_folder()
@@ -130,10 +189,27 @@ with st.sidebar:
         "LLM provider", options, index=options.index("openrouter") if "openrouter" in options else 0,
         key=f"provider-{nonce}", help="Tried first; the others are used as fallbacks if it fails.",
     )
+    # API key box for the selected provider; a key typed here beats the .env key, which stays the fallback.
+    # Each provider keeps its own box value, so switching the dropdown never sends one provider's key to another.
+    chosen = router.preferred
+    typed = st.text_input(
+        f"API key for {chosen}", type="password", key=f"apikey-{chosen}-{nonce}",
+        placeholder="Leave empty to use the key from .env",
+        help="Used first for this provider. If empty, the key in .env is used. Kept in this session only: it is "
+             "never saved to disk or to Scan history.",
+    )
+    router.key_overrides = {
+        p: (typed if p == chosen else st.session_state.get(f"apikey-{p}-{nonce}", "")).strip() for p in options
+    }
+    source_note = {"typed": "🔑 using the key you entered", ".env": "using the key from .env",
+                   "none": "no key: add one above or in .env, otherwise rule-based mode"}[router.key_source(chosen)]
+    st.caption(f"{chosen}: {source_note}")
+    set_embedding_key(router.key_overrides.get("openai", ""))  # an OpenAI key typed here also drives RAG embeddings
     providers = router.available_providers()
     st.markdown("**Active providers:** " + (", ".join(providers) if providers else "none (rule-based mode)"))
     st.caption(f"Model: `{router.model_for(router.preferred)}` ({router.preferred})")
     st.caption("Fallback order: " + " → ".join(f"{p} (`{router.model_for(p)}`)" for p in router.ordered_providers()))
+    st.caption(f"RAG embeddings: {'OpenAI (`' + settings.embedding_model + '`)' if embedding_backend() == 'openai' else 'local, no OpenAI key'}")
 
     source = st.radio("Data to analyze", ["Demo attack scenario", "Upload my own files"], key=f"source-{nonce}")
     inputs = default_inputs()
@@ -180,43 +256,110 @@ with st.sidebar:
     scan_name = st.text_input("Scan name (optional)", key=f"name-{nonce}",
                               placeholder="e.g. Prod web server, weekly check")
     run = st.button("▶ Run assessment", type="primary", use_container_width=True)
+    live_on = st.toggle(
+        "Live scan", key=f"live-{nonce}", on_change=reset_live,
+        help="Keep watching the logs and alert the moment a new attack appears. Turn on Simulation mode to replay "
+             "the demo logs as a simulated live feed; for your own data use a folder path or the live_logs/ folder.",
+    )
+    scanning = bool(run or live_on)
+    st.markdown(scan_status_html(scanning, "assessment running" if run else "live scan on" if live_on else "no scan running"),
+                unsafe_allow_html=True)
+    live_interval, live_auto, live_llm, sim_on = 5, True, False, False
+    if live_on:
+        sim_on = st.toggle(
+            "🎬 Simulation mode", key=f"sim-{nonce}", on_change=reset_live,
+            help="Replay the existing demo logs gradually as a simulated live feed. Switch it off to follow real "
+                 "log files: your folder path, or the live_logs/ folder you can paste attack lines into.",
+        )
+        with st.expander("Live scan settings"):
+            live_interval = st.slider("Check every (seconds)", 2, 30, 5, key=f"live-interval-{nonce}")
+            live_auto = st.checkbox("Refresh the dashboard on new alerts (full assessment)", value=True,
+                                    key=f"live-auto-{nonce}",
+                                    help="Runs all five agents so Incidents, Log detections, Code findings and CVEs "
+                                         f"update. Also runs once when Live scan starts. At most every {LIVE_ASSESS_GAP} "
+                                         "seconds; each run is saved to Scan history.")
+            live_llm = st.checkbox("Use the LLM for these refreshes (slower, uses tokens)", value=False,
+                                   key=f"live-llm-{nonce}", disabled=not live_auto,
+                                   help="Off: the agents use their rule-based output, so counters update in seconds with "
+                                        "no model calls. Press Run assessment for a full LLM-written report.")
+        if not sim_on and not repo_folder.strip():
+            # default target: a writable folder the tailer follows, so attacks can be pasted in
+            with st.expander("🧪 Test it: paste log lines", expanded=True):
+                st.caption(f"Live scan is following `{settings.live_dir}`. Paste attack lines (examples in "
+                           "`samples/live_examples/`) and append them to the matching log.")
+                st.selectbox("Append to", LIVE_LOG_FILES, key=f"paste-target-{nonce}")
+                st.text_area("Log lines", key=f"paste-text-{nonce}", height=130,
+                             placeholder='Oct 10 11:20:01 web-01 sshd[7101]: Failed password for root from 203.0.113.45 port 40211 ssh2')
+                cols = st.columns(2)
+                cols[0].button("➕ Append to log", key=f"paste-go-{nonce}", on_click=append_pasted,
+                               args=(f"paste-text-{nonce}", f"paste-target-{nonce}"), use_container_width=True)
+                cols[1].button("🧹 Clear live logs", key=f"paste-clear-{nonce}", on_click=clear_live_logs,
+                               use_container_width=True, help="Empty all three files and start again")
+                if note := st.session_state.get("paste_note", ""):  # stays until the next append
+                    st.success(note)
 
     scans = history.list_scans()
     active = st.session_state.get("scan", {}).get("id")
     with st.expander(f"🕘 Scan history ({len(scans)})", expanded=False):
         if not scans:
             st.caption("No saved scans yet. Each assessment you run is saved here.")
-        for sc in scans:
-            when = sc["created_at"].replace("T", " ")[:16]
-            st.button(
-                f"{SEV_ICON.get(sc['risk'], '')} {sc['name']}",
-                key=f"open-{sc['id']}", on_click=open_scan, args=(sc["id"],), use_container_width=True,
-                type="primary" if sc["id"] == active else "secondary", help=f"{sc['source']} · open this scan",
-            )
-            st.caption(f"{when} UTC · {sc['incidents']} incidents")
+        # a long history scrolls inside a fixed-height box instead of stretching the sidebar
+        with st.container(height=HISTORY_BOX_PX if len(scans) > HISTORY_SCROLL_AFTER else "content"):
+            for sc in scans:
+                when = sc["created_at"].replace("T", " ")[:16]
+                st.button(
+                    f"{SEV_ICON.get(sc['risk'], '')} {sc['name']}",
+                    key=f"open-{sc['id']}", on_click=open_scan, args=(sc["id"],), use_container_width=True,
+                    type="primary" if sc["id"] == active else "secondary", help=f"{sc['source']} · open this scan",
+                )
+                st.caption(f"{when} UTC · {sc['incidents']} incidents")
         if active:
             st.button("Delete the open scan", key="del-active", on_click=delete_scan, args=(active,),
                       use_container_width=True)
+    st.markdown(APP_CSS, unsafe_allow_html=True)
+
+# ---- header: title, then the banner (a still when idle, an animated GIF while any scan is running) ----
+st.title("🛡️ Cyber Security AI Agent")
+st.markdown(
+    f'<div class="sa-tagline" style="color:{tagline_color()}">Five AI agents for detection, intel, scanning, '
+    "response and compliance.</div>",
+    unsafe_allow_html=True,
+)
+if scanning:
+    st.image(str(BANNER_SCAN), width="stretch")  # untouched, so the GIF keeps animating
+else:
+    st.image(str(BANNER_STILL), width="stretch", output_format="PNG")  # PNG: no JPEG blur
+
 
 # ---- run the graph with a live agent trace ----------------------------------------
-if run and repo_folder.strip():
-    try:
-        repo_inputs, found = collect_repo_inputs(repo_folder.strip(), repo_excludes, use_ignore_files=False)
-    except OSError as exc:
-        st.error(str(exc))
-        st.stop()
-    # folder results fill the slots; logs from both sources are scanned
-    inputs = {**inputs, **{k: v for k, v in repo_inputs.items() if v and k != "log_paths"},
-              "log_paths": inputs["log_paths"] + repo_inputs["log_paths"]}
-    st.info(f"📁 Scanning `{repo_folder.strip()}`: {found['logs']} log file(s), {found['python']} Python file(s), "
-            f"{found['requirements']} requirements, {found['dockerfiles']} Dockerfile(s), {found['configs']} config file(s).")
+def with_repo(base: dict, folder: str, excludes: str) -> tuple[dict, dict]:
+    """Fill the input slots from a scanned folder; logs from the base inputs and the folder are both kept."""
+    repo_inputs, found = collect_repo_inputs(folder.strip(), excludes, use_ignore_files=False)
+    merged = {**base, **{k: v for k, v in repo_inputs.items() if v and k != "log_paths"},
+              "log_paths": base["log_paths"] + repo_inputs["log_paths"]}
+    return merged, found
 
-if run:
+
+@contextmanager
+def llm_enabled(on: bool):
+    router = get_router()
+    previous, router.enabled = router.enabled, on
+    try:
+        yield
+    finally:
+        router.enabled = previous
+
+
+def run_assessment(inputs: dict, name: str, source_label: str, use_llm: bool = True) -> None:
+    """Stream the five agents with the animated trace, then save the result and make it the open scan.
+
+    ``use_llm=False`` keeps every agent on its rule-based output: same detections and counters, no model calls.
+    """
     state: dict = {}
     trace: list = []
     get_router().calls.clear()
     done: set[str] = set()
-    with st.status("Agents working...", expanded=True) as status:
+    with llm_enabled(use_llm), st.status("Agents working...", expanded=True) as status:
         banner = st.empty()
         banner.markdown(pipeline_html(None, done), unsafe_allow_html=True)
         for node, update in stream(inputs):
@@ -235,11 +378,128 @@ if run:
         status.update(label="Assessment complete", state="complete", expanded=True)
     state["trace"] = trace
     state["llm_calls"] = list(get_router().calls)
-    scan_id = history.save(state, scan_name, source)
+    scan_id = history.save(state, name, source_label)
     st.session_state["result"] = state
     st.session_state["scan"] = {k: v for k, v in history.load(scan_id).items() if k != "result"}
     st.session_state.pop("chat", None)
+
+
+if run:
+    if live_on and not sim_on and not repo_folder.strip():
+        inputs = {**inputs, "log_paths": live_log_paths()}  # analyse what Live scan is following, not the demo logs
+    if repo_folder.strip():
+        try:
+            inputs, found = with_repo(inputs, repo_folder, repo_excludes)
+        except OSError as exc:
+            st.error(str(exc))
+            st.stop()
+        st.info(f"📁 Scanning `{repo_folder.strip()}`: {found['logs']} log file(s), {found['python']} Python file(s), "
+                f"{found['requirements']} requirements, {found['dockerfiles']} Dockerfile(s), {found['configs']} config file(s).")
+    run_assessment(inputs, scan_name, source)
     st.rerun()  # refresh the sidebar history with the new scan
+
+
+# ---- live scan: follow the logs and alert on new attacks --------------------------
+def start_live(mode: str, folder: str, excludes: str, sig: tuple) -> dict | None:
+    feed = None
+    try:
+        if mode == "demo":
+            feed = ReplayFeed(default_inputs()["log_paths"])
+            tailer = LogTailer(feed.paths, baseline=False)
+        elif mode == "files":
+            tailer = LogTailer(live_log_paths(), baseline=True)
+        else:
+            paths = find_logs(folder.strip(), excludes)
+            if not paths:
+                st.warning("No .log files found in that folder (check the exclude list).")
+                return None
+            tailer = LogTailer(paths, baseline=True)  # what is already in the files is not an alert
+    except OSError as exc:
+        st.error(str(exc))
+        return None
+    live = {"sig": sig, "feed": feed, "tailer": tailer, "alerts": [], "n": 0, "last_run": 0.0, "last_run_at": "",
+            "pending": mode != "demo"}  # real files: take a baseline assessment right away so the counters exist
+    st.session_state["live"] = live
+    return live
+
+
+def live_panel(mode: str, folder: str, excludes: str, base_inputs: dict, source_label: str,
+               interval: int, auto_assess: bool, use_llm: bool) -> None:
+    live = st.session_state.get("live")
+    if not live or live["sig"] != (mode, folder, excludes):
+        live = start_live(mode, folder, excludes, (mode, folder, excludes))
+        if live is None:
+            return
+    feed, tailer = live["feed"], live["tailer"]
+    if feed:
+        feed.advance()
+    fresh = tailer.poll()
+    for e in fresh:
+        live["n"] += 1
+        alert = to_alert(e, live["n"])
+        live["alerts"].insert(0, alert)
+        st.toast(f"{alert['severity']}: {alert['type']}", icon=SEV_ICON.get(alert["severity"], "⚠️"))
+    if fresh:
+        live["pending"] = True  # any new attack refreshes the dashboard counters
+
+    with st.container(border=True):
+        st.markdown(f'<span class="sa-live"><span class="sa-dot on"></span>LIVE SCAN · checking every {interval}s</span>',
+                    unsafe_allow_html=True)
+        c = st.columns(4)
+        c[0].metric("Files watched", len(tailer.paths))
+        c[1].metric("Lines read", f"{tailer.lines_read:,}")
+        c[2].metric("Detections", len(tailer.events))
+        c[3].metric("New alerts", len(live["alerts"]))
+        if feed:
+            st.progress(feed.progress, text="Simulation: replaying the demo logs" + (" (finished)" if feed.done else ""))
+        elif mode == "files":
+            st.caption(f"Following `{settings.live_dir}`. Paste attack lines in the sidebar's **Test it** box.")
+        else:
+            st.caption(f"Following the log files in `{folder.strip()}`.")
+        per_file = " · ".join(f"{n} {c}" for n, c in tailer.read_by_file.items()) or "no lines yet"
+        st.caption(f"Lines read per file: {per_file}. Last checked {datetime.now():%H:%M:%S}.")
+        if tailer.lines_read and not live["alerts"]:
+            st.caption("No attack pattern yet. The rules look for patterns, e.g. 10+ failed SSH logins from one IP, "
+                       "a web request carrying SQL injection, or a port scan. Paste more lines or use "
+                       "`samples/live_examples/`.")
+        res = st.session_state.get("result")
+        if res:  # the same counters as the Overview tab, refreshed after every live assessment
+            k = st.columns(4)
+            k[0].metric("Incidents", len(res.get("incident_plan", {}).get("incidents", [])))
+            k[1].metric("Log detections", len(res.get("log_findings", {}).get("events", [])))
+            k[2].metric("Code & config findings", len(res.get("vuln_findings", {}).get("findings", [])))
+            k[3].metric("CVEs affecting us", len(res.get("threat_intel", {}).get("cve_matches", [])))
+            st.caption("Dashboard counters" + (f" as of the last assessment at {live['last_run_at']}." if live["last_run_at"]
+                                               else " from the open scan."))
+        elif auto_assess:
+            st.caption("Dashboard counters appear after the first assessment, which starts automatically.")
+        for a in live["alerts"][:15]:
+            box = st.error if a["severity"] == "CRITICAL" else st.warning if a["severity"] == "HIGH" else st.info
+            who = a.get("src_ip") or a.get("target", "")
+            head = f"**{a['id']} · {a['severity']} · {a['type']}** · {who} · {a['detected_at']}"
+            box(head + "\n\n" + a["description"],
+                icon=SEV_ICON.get(a["severity"], "⚠️"))
+        if live["pending"] and auto_assess:
+            wait = LIVE_ASSESS_GAP - (time.time() - live["last_run"])
+            if wait > 0:
+                st.caption(f"Dashboard refresh queued, starts in {int(wait)}s.")
+
+    if auto_assess and live["pending"] and time.time() - live["last_run"] >= LIVE_ASSESS_GAP:
+        live["pending"], live["last_run"] = False, time.time()
+        live["last_run_at"] = f"{datetime.now():%H:%M:%S}"
+        if mode == "folder":
+            run_inputs = with_repo(base_inputs, folder, excludes)[0]
+        else:  # simulation temp copy or live_logs/: analyse exactly the files being followed
+            run_inputs = {**base_inputs, "log_paths": [str(p) for p in tailer.paths]}
+        run_assessment(run_inputs, f"🔴 Live alert · {datetime.now():%d %b %H:%M:%S}", f"Live scan ({source_label})", use_llm)
+        st.rerun(scope="app")
+
+
+if live_on:
+    # simulation replays the demo logs; else follow a folder's real logs; else follow live_logs/ (paste target)
+    live_mode = "demo" if sim_on else "folder" if repo_folder.strip() else "files"
+    st.fragment(run_every=live_interval)(live_panel)(
+        live_mode, repo_folder, repo_excludes, inputs, source, live_interval, live_auto, live_llm)
 
 result = st.session_state.get("result")
 if not result:

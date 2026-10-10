@@ -107,6 +107,15 @@ def walk_repo(root: Path, rules: IgnoreRules):
                 yield prefix + fn, here / fn
 
 
+def find_logs(folder: str, exclude_text: str = "", use_ignore_files: bool = False) -> list[str]:
+    """Paths of the .log files under a folder (same exclusion rules as the full scan, nothing copied)."""
+    root = Path(folder).expanduser().resolve()
+    if not root.is_dir():
+        raise FileNotFoundError(f"Not a folder: {folder}")
+    rules = load_ignore_rules(root, parse_excludes(exclude_text), use_ignore_files)
+    return [str(p) for rel, p in walk_repo(root, rules) if rel.lower().endswith(".log")]
+
+
 def _shallowest(candidates: list[str]) -> str | None:
     return min(candidates, key=lambda r: (r.count("/"), r)) if candidates else None
 

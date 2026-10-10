@@ -8,3 +8,4 @@ __pycache__/
 security_report.md
 security_results.json
 .history/
+live_logs/

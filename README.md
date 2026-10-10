@@ -55,11 +55,21 @@ cp .env.example .env        # add ANTHROPIC_API_KEY / OPENAI_API_KEY / OPENROUTE
 
 streamlit run app/streamlit_app.py     # dashboard
 python -m secagents --json results.json  # CLI: writes security_report.md
-pytest                                  # 22 tests, no API keys needed
+pytest                                  # 43 tests, no API keys needed
 ```
 
 The CLI accepts your own data: `python -m secagents --logs /var/log/auth.log access.log --code ./src --requirements requirements.txt --dockerfile Dockerfile --config my_config.yaml`.
 The dashboard also has an **Upload my own files** mode, a **Scan a whole folder** option (type a path or press **Browse...**; the folder's `.gitignore` / `.ignore` entries are pre-filled into an editable, comma-separated exclude box) and an **Ask** tab for questions such as *"Are we affected by Log4Shell?"*.
+
+**Live scan** (switch under *Run assessment*): keeps watching the logs instead of analysing them once. Every few seconds it reads only the new lines of each log file, re-runs the Log Monitor's rules (no LLM, so it is cheap), and raises an alert the first time each attack appears; the same attack is never alerted twice. It also refreshes the whole dashboard: all five agents run once when Live scan starts (so the Incidents, Log detections, Code & config findings and CVE counters exist straight away) and again on every new alert, at most every 20 seconds. These refreshes are rule-based by default (seconds, no model calls; tick *Use the LLM* for LLM-written text) and each is saved to Scan history. The live panel shows the same counters as the Overview tab. Three ways to feed it:
+
+- **🎬 Simulation mode** (switch shown once Live scan is on): replays the existing demo logs gradually as a simulated live feed. Nothing to set up.
+- **Test it: paste log lines** (default when Simulation is off): follows the `live_logs/` folder (`LIVE_LOGS_DIR` to move it). Paste attack lines into the sidebar box and press **Append to log**, or append to those files yourself. Copy-paste examples are in [`samples/live_examples/`](samples/live_examples/README.md).
+- **A folder path**: enter a **Repository folder path** and its real log files are followed. Files uploaded in the browser are fixed copies and cannot be followed.
+
+Existing log content is treated as the baseline, so switch Live scan on first; only activity after that raises alerts.
+
+**Scan status at a glance:** a banner tops the dashboard. It is a calm still image (agents, shield and green code lines) when idle and an animated GIF (radar sweep, data packets flowing from the agents into the shield, and a green scan bar moving top to bottom that lights up the green code lines behind it) while a scan is running: *Run assessment*, Live scan, or Simulation. Beside the **Live scan** switch, a status dot is **red and still** when idle and **green and pulsing** while scanning. Regenerate the artwork with `python scripts/make_banner.py`.
 
 Every assessment is saved to `.history/` (set `HISTORY_DIR` to move it) and listed under **Scan history** in the sidebar, using the name you give it or an automatic one (source, time, risk). Click a scan to reopen it. **Reset**, under the title, clears the current results, chat and inputs; saved history is kept.
 
@@ -84,11 +94,13 @@ secagents/
   graph.py       LangGraph supervisor
   llm.py         Claude / OpenAI / OpenRouter router
   repo_scan.py   Folder scan: ignore rules, exclusions, staging
+  live.py        Live scan: log tailer, alert de-duplication, demo replay, live_logs/ helpers
   report.py      Markdown report
   qa.py          Ask-the-agents Q&A
 knowledge/       cves.jsonl, attack.jsonl, controls.jsonl, threat_feed.json
-samples/         demo logs, vulnerable app, system config
-app/             Streamlit dashboard
+samples/         demo logs, vulnerable app, system config, live_examples/ (paste-in attack lines)
+app/             Streamlit dashboard (assets/: banner still PNG and scanning GIF)
+scripts/         make_banner.py regenerates the banner images
 tests/
 ```
 
@@ -117,7 +129,7 @@ Requirement: *an AI-powered cybersecurity system made of multiple agents that mo
 | 9 | ...and shows where you need fixes | ✅ | Per-control PASS / PARTIAL / FAIL, framework scores, gaps ranked by controls closed, remediation roadmap |
 | 10 | Multiple agents working together | ✅ | LangGraph supervisor (`graph.py`) runs agents in dependency order |
 | 11 | RAG and agents working together | ✅ | Chroma store with an agentic retriever that grades results, rewrites the query and retries (`rag/`) |
-| 12 | Real-time threat detection, analysis and response | 🟡 | The agent run streams live in the dashboard (animated current agent, trace). Logs are analysed per run, not tailed continuously |
+| 12 | Real-time threat detection, analysis and response | ✅ | **Live scan** switch next to *Run assessment*: follows the log files as they grow, alerts the first time each attack appears and refreshes the full agent pipeline and dashboard counters on new alerts (`live.py`). It runs while the dashboard is open; it is not a background service |
 | 13 | Suggest fixes automatically | ✅ | Code fix suggestions, incident playbook, compliance roadmap, all LLM-written with rule-based fallbacks |
 | 14 | Useful for security engineers, DevOps and IT teams | ✅ | Streamlit dashboard, CLI (`python -m secagents`), Markdown and JSON report export, folder scan, scan history |
 
@@ -171,10 +183,16 @@ They need a system-configuration YAML (see `samples/config/system_config.yaml`).
 Threat Intelligence (CVE and ATT&CK lookup), the Policy Checker (control text for the biggest gaps) and the **Ask** tab. The retriever queries Chroma, has the LLM grade the hits, rewrites the query and retries once if they are poor.
 
 **Which embeddings does it use?**
-OpenAI embeddings when `OPENAI_API_KEY` is set, otherwise a local hashed embedding, so RAG also works offline.
+OpenAI embeddings when an OpenAI key is available, otherwise a local hashed embedding, so RAG also works offline. The key typed in the dashboard (for the OpenAI provider) wins over `OPENAI_API_KEY` in `.env`. Typing, changing or clearing it switches the knowledge base on the next agent run: Chroma keeps separate collections per backend, so the OpenAI collections are built once, kept on disk and only topped up afterwards, and clearing the key returns to `.env` (or local). A key that fails (wrong or unreachable) falls back to local embeddings and is not retried until it changes. The sidebar shows which embeddings are in use.
+
+**Can retrieval fail while Chroma builds its index?**
+Chroma can briefly report "Nothing found on disk" for a brand-new collection, depending on timing and threads. Retrieval retries and then falls back to an exact similarity search over the stored vectors (same ranking, the knowledge base is tiny), so an agent run never fails on it.
 
 **Which LLM providers are supported and how does fallback work?**
 OpenRouter, Anthropic (Claude) and OpenAI. The default order is `openrouter,anthropic,openai` (`LLM_PROVIDER_ORDER`). If a provider has no key, fails or refuses, the next one is tried; if all fail, the agent uses its rule-based output.
+
+**Can I enter an API key in the dashboard instead of `.env`?**
+Yes. Under the **LLM provider** dropdown there is an **API key for <provider>** box (masked). A key typed there is used first for that provider; if the box is empty the key from `.env` is used, so `.env` stays the fallback. Each provider remembers its own box, switching the dropdown never sends one provider's key to another, and a caption says whether the typed key or the `.env` key is in use. The key lives only in your browser session and the app's memory: it is never written to disk, Scan history or the report. An **OpenAI** key typed there also drives the RAG embeddings (see below); keys for other providers only affect chat.
 
 **How do I choose the provider and model?**
 Use the **LLM provider** dropdown in the sidebar (default OpenRouter). The chosen provider is tried first and the others stay as fallbacks. The sidebar shows each provider's model, taken from `CLAUDE_MODEL`, `OPENAI_MODEL` and `OPENROUTER_MODEL` in `.env`.
@@ -205,7 +223,34 @@ Questions such as "Are we affected by Log4Shell?" or "What should we do in the n
 ### Accuracy and limits
 
 **Is this real-time?**
-The run streams live in the dashboard, with the active agent animated. Logs are analysed once per run; there is no continuous log tailing yet.
+Yes, in the dashboard's **Live scan** mode: it polls the log files every 2 to 30 seconds (default 5), analyses only the new lines and alerts as soon as a new attack appears. It is polling, not an event stream, so alerts lag by up to one interval. It runs only while the dashboard page is open; it is not a background service, so close the page and monitoring stops. Without Live scan, each *Run assessment* analyses the logs once.
+
+**How do I use Live scan?**
+Switch on **Live scan** under *Run assessment*. Turn on **🎬 Simulation mode** to watch the demo logs replayed as a live feed. Leave it off to follow real files: either the `live_logs/` folder (paste attack lines from `samples/live_examples/` into the sidebar's **Test it** box) or, if you enter a **Repository folder path**, that folder's `.log` files. Browser uploads cannot be followed because they are fixed copies. Switching Live scan or Simulation off and on starts again from scratch.
+
+**What do the banner and the red/green dot mean?**
+Both show whether a scan is running. Idle: still banner and a red dot. Scanning (an assessment is running, or Live scan or Simulation is on): animated banner and a pulsing green dot.
+
+**What can I paste to test Live scan?**
+See `samples/live_examples/`: SSH brute force followed by a compromise and a backdoor account (`auth.log`), SQL injection / path traversal / XSS / command injection / Log4Shell / sqlmap (`nginx_access.log`), and a port scan plus a large outbound transfer to port 4444 (`firewall.log`). Pasted into the matching log, together they raise 14 alerts.
+
+**Does Live scan alert on attacks that are already in the logs?**
+No. Existing content is the baseline; only attacks that appear after you switch it on raise alerts. Run an assessment first if you also want the existing history analysed.
+
+**Will it spam me or run the LLM constantly?**
+No. Detection is rule-based (no LLM calls) and each attack is alerted once, even as more matching lines arrive. Dashboard refreshes (all five agents) run when Live scan starts and on new alerts, at most every 20 seconds, and are rule-based unless you tick *Use the LLM for these refreshes*. Untick *Refresh the dashboard on new alerts* to get alerts only.
+
+**I pasted a few log lines and nothing happened. Why?**
+The detection rules need patterns, not single lines: for example 10+ failed SSH logins from one IP, a web request carrying SQL injection, or a port scan across 10+ ports. The panel shows how many lines were read per file and says when no pattern has matched yet. Paste the full example files from `samples/live_examples/` (or the one-line quick tests) to see alerts and counters change.
+
+**Why do the counters (incidents, detections, code findings, CVEs) update only after a moment?**
+They come from a full assessment, not from the tailer. Live scan runs one when it starts and again after new alerts (a short debounce applies). While Live scan follows real files, **Run assessment** analyses those same files.
+
+**What is the `ConnectionResetError: [WinError 10054]` message in the terminal?**
+Harmless noise from Python's asyncio on Windows when the browser tab is closed or reloaded. The dashboard filters it out; it never indicates a scan failure.
+
+**What happens when log files rotate?**
+If a file shrinks below the position already read, the tailer treats it as rotated and reads it again from the start. A line still being written is held back until its newline arrives.
 
 **Why was a line in my code flagged as a hardcoded password?**
 The secret scanner looks for password-like names assigned to literal values. In Python files the value must be quoted, and code expressions such as f-string braces or function calls are ignored. Anything else flagged is worth a manual look.

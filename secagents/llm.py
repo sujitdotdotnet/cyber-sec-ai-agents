@@ -30,9 +30,11 @@ class LLMResult:
 class LLMRouter:
     def __init__(self, cfg: Settings | None = None):
         self.cfg = cfg or default_settings
-        self._clients: dict[str, Any] = {}
+        self._clients: dict[tuple[str, str], Any] = {}  # (provider, key) -> client, so a changed key gets a new client
         self.calls: list[dict[str, str]] = []  # lightweight trace for the dashboard
         self.preferred: str | None = None  # tried first when set; the rest follow provider_order
+        self.enabled = True  # False: skip every provider, so agents use their rule-based output (fast, free)
+        self.key_overrides: dict[str, str] = {}  # keys typed in the dashboard; they win over the .env keys
 
     # ---- provider plumbing -------------------------------------------------
     def ordered_providers(self) -> list[str]:
@@ -51,35 +53,47 @@ class LLMRouter:
             "openrouter": self.cfg.openrouter_model,
         }.get(provider, "")
 
-    def available_providers(self) -> list[str]:
-        if self.cfg.offline:
-            return []
-        keys = {
+    def api_key(self, provider: str) -> str:
+        """The key to use: one entered in the dashboard first, otherwise the one from .env."""
+        typed = self.key_overrides.get(provider, "").strip()
+        if typed:
+            return typed
+        return {
             "anthropic": self.cfg.anthropic_api_key,
             "openai": self.cfg.openai_api_key,
             "openrouter": self.cfg.openrouter_api_key,
-        }
-        return [p for p in self.ordered_providers() if keys.get(p)]
+        }.get(provider, "")
+
+    def key_source(self, provider: str) -> str:
+        """Where api_key() gets its value from: "typed", ".env" or "none" (never the key itself)."""
+        if self.key_overrides.get(provider, "").strip():
+            return "typed"
+        return ".env" if self.api_key(provider) else "none"
+
+    def available_providers(self) -> list[str]:
+        if self.cfg.offline or not self.enabled:
+            return []
+        return [p for p in self.ordered_providers() if self.api_key(p)]
 
     def _client(self, provider: str):
-        if provider not in self._clients:
+        key = self.api_key(provider)
+        if (provider, key) not in self._clients:
             if provider == "anthropic":
                 import anthropic
 
-                self._clients[provider] = anthropic.Anthropic(api_key=self.cfg.anthropic_api_key)
+                client = anthropic.Anthropic(api_key=key)
             elif provider == "openai":
                 from openai import OpenAI
 
-                self._clients[provider] = OpenAI(api_key=self.cfg.openai_api_key)
+                client = OpenAI(api_key=key)
             elif provider == "openrouter":
                 from openai import OpenAI
 
-                self._clients[provider] = OpenAI(
-                    api_key=self.cfg.openrouter_api_key, base_url=OPENROUTER_BASE_URL
-                )
+                client = OpenAI(api_key=key, base_url=OPENROUTER_BASE_URL)
             else:
                 raise ValueError(f"unknown provider {provider}")
-        return self._clients[provider]
+            self._clients[(provider, key)] = client
+        return self._clients[(provider, key)]
 
     def _call_anthropic(self, system: str, prompt: str, max_tokens: int) -> LLMResult:
         client = self._client("anthropic")
