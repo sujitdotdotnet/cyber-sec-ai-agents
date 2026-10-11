@@ -6,7 +6,7 @@ Ready-made attack log lines to see **Live scan** react. All IPs are from RFC 573
 
 In the dashboard switch on **Live scan** (leave **Simulation mode** off), open the sidebar's **Test it** box, pick an
 example under **Add a ready-made attack** and press **⚡ Add example**. The lines in these files are added for you and
-sent to the right log files. Alerts appear within one check interval, and each attack is alerted once.
+sent to the right log files. Alerts appear within one check interval, and an attack in a growing log is alerted once, but lines you add here alert every time (marked "↻ added again" if the attack was reported before).
 
 ## What is in this folder
 

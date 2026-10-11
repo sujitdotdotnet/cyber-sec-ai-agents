@@ -51,9 +51,10 @@ def _import_secagents() -> dict:
     from secagents.config import settings
     from secagents.exporters import MIME as EXPORT_MIME, export
     from secagents.graph import default_inputs, stream
+    from secagents.agents.log_monitor import detect_named
     from secagents.live import (
         ALL_EXAMPLES, EXAMPLE_FILES, FORMAT_EXAMPLES, KIND_FILE, LIVE_LOG_FILES, LogTailer, ReplayFeed, append_log_lines,
-        append_routed, clear_live_logs, example_text, live_log_paths, repair_live_logs, route_lines, to_alert,
+        append_routed, clear_live_logs, event_key, example_text, live_log_paths, repair_live_logs, route_lines, to_alert,
     )
     from secagents.llm import get_router
     from secagents.qa import ask
@@ -207,9 +208,22 @@ def reset_live() -> None:
 PASTE_AUTO = "Auto-detect (recommended)"
 
 
+def queue_test_batch(routed: dict[str, list[str]]) -> None:
+    """Remember lines the user just added by hand (a paste or an example) for the live panel.
+
+    The tailer reports an attack once, so adding the same attack again (the same example twice, a paste after the
+    example, or lines identical to ones already in the folder when Live scan started) would raise no alert and look
+    broken. The live panel checks this batch on its own and alerts again for attacks that were already reported.
+    """
+    st.session_state["live_batch"] = [(name, lines) for name, lines in routed.items() if lines]
+
+
 def clear_live_logs_ui() -> None:
-    """Button callback: empty the live logs and forget the old paste messages that no longer apply."""
+    """Button callback: empty the live logs, start the live scan over, and forget the old paste messages."""
     clear_live_logs()
+    st.session_state.pop("live", None)  # alerts, counters and the "already reported" memory all restart
+    st.session_state["skip_baseline"] = True  # ...but without a fresh full assessment: that is for starting Live scan
+    st.session_state.pop("live_batch", None)
     st.session_state["paste_note"], st.session_state["paste_warn"] = "Cleared the live logs.", ""
 
 
@@ -224,7 +238,9 @@ def fix_live_logs() -> None:
 def append_example(example_key: str) -> None:
     """Button callback: write a ready-made attack (from samples/live_examples) into the live logs."""
     name = st.session_state.get(example_key, ALL_EXAMPLES)
-    written, _ = append_routed(example_text(name))
+    text = example_text(name)
+    written, _ = append_routed(text)
+    queue_test_batch(route_lines(text)[0])
     st.session_state["paste_note"] = (f"Added the example '{name.split(' (')[0]}': "
                                       + ", ".join(f"{n} → {f}" for f, n in written.items()) + ".")
     st.session_state["paste_warn"] = ""
@@ -245,6 +261,7 @@ def append_pasted(text_key: str, target_key: str) -> None:
     note, warn = "", ""
     if target == PASTE_AUTO:
         written, ignored = append_routed(text)
+        queue_test_batch(route_lines(text)[0])
         if written:
             note = f"Appended {sum(written.values())} line(s): " + ", ".join(f"{n} → {f}" for f, n in written.items()) + "."
         if ignored and not written:
@@ -259,6 +276,7 @@ def append_pasted(text_key: str, target_key: str) -> None:
     else:
         n = append_log_lines(target, text)
         note = f"Appended {n} line(s) to {target}." if n else "Nothing to append: paste some log lines first."
+        queue_test_batch({target: [ln.rstrip() for ln in text.replace("\r\n", "\n").splitlines() if ln.strip()]})
         routed, ignored = route_lines(text)
         elsewhere = {f: len(ls) for f, ls in routed.items() if f != target}
         if elsewhere or ignored:
@@ -595,8 +613,10 @@ def start_live(mode: str, folder: str, excludes: str, sig: tuple) -> dict | None
     except OSError as exc:
         st.error(str(exc))
         return None
+    # real files: take a baseline assessment right away so the counters exist, except when only restarting after Clear
+    baseline = mode != "demo" and not st.session_state.pop("skip_baseline", False)
     live = {"sig": sig, "feed": feed, "tailer": tailer, "alerts": [], "n": 0, "last_run": 0.0, "last_run_at": "",
-            "pending": mode != "demo"}  # real files: take a baseline assessment right away so the counters exist
+            "pending": baseline}
     st.session_state["live"] = live
     return live
 
@@ -611,13 +631,19 @@ def live_panel(mode: str, folder: str, excludes: str, base_inputs: dict, source_
     feed, tailer = live["feed"], live["tailer"]
     if feed:
         feed.advance()
-    fresh = tailer.poll()
-    for e in fresh:
+    # Lines the user just added by hand are checked on their own first: an attack the tailer has already reported would
+    # otherwise stay silent (it alerts once), which makes a second paste or a second example look like it did nothing.
+    batch = st.session_state.pop("live_batch", None)
+    repeats = [e for e in detect_named(batch) if event_key(e) in tailer.seen] if batch else []
+    fresh = tailer.poll()  # new attacks, found by the tailer as usual (disjoint from `repeats`: those were already seen)
+    for e in [*repeats, *fresh]:
         live["n"] += 1
         alert = to_alert(e, live["n"])
+        alert["repeat"] = e in repeats
         live["alerts"].insert(0, alert)
-        st.toast(f"{alert['severity']}: {alert['type']}", icon=SEV_ICON.get(alert["severity"], "⚠️"))
-    if fresh:
+        st.toast(f"{alert['severity']}: {alert['type']}" + (" (repeat)" if alert["repeat"] else ""),
+                 icon=SEV_ICON.get(alert["severity"], "⚠️"))
+    if fresh or repeats:
         live["pending"] = True  # any new attack refreshes the dashboard counters
 
     with st.container(border=True):
@@ -684,7 +710,8 @@ def live_panel(mode: str, folder: str, excludes: str, base_inputs: dict, source_
         for a in live["alerts"][:15]:
             box = st.error if a["severity"] == "CRITICAL" else st.warning if a["severity"] == "HIGH" else st.info
             who = a.get("src_ip") or a.get("target", "")
-            head = f"**{a['id']} · {a['severity']} · {a['type']}** · {who} · {a['detected_at']}"
+            head = (f"**{a['id']} · {a['severity']} · {a['type']}** · {who} · {a['detected_at']}"
+                    + (" · ↻ added again" if a.get("repeat") else ""))
             box(head + "\n\n" + a["description"],
                 icon=SEV_ICON.get(a["severity"], "⚠️"))
         if live["pending"] and auto_assess:

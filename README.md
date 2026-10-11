@@ -78,7 +78,7 @@ cp .env.example .env        # add ANTHROPIC_API_KEY / OPENAI_API_KEY / OPENROUTE
 
 streamlit run app/streamlit_app.py     # dashboard
 python -m secagents --json results.json  # CLI: writes security_report.md (add --docx r.docx --xlsx r.xlsx --pdf r.pdf)
-pytest                                  # 138 tests, no API keys needed
+pytest                                  # 148 tests, no API keys needed
 ```
 
 The CLI accepts your own data: `python -m secagents --logs /var/log/auth.log access.log --code ./src --requirements requirements.txt --dockerfile Dockerfile --config my_config.yaml`.
@@ -296,7 +296,10 @@ You do not have to paste anything: in the sidebar's **Test it** box pick an exam
 No. Existing content is the baseline; only attacks that appear after you switch it on raise alerts. Run an assessment first if you also want the existing history analysed.
 
 **Will it spam me or run the LLM constantly?**
-No. Detection is rule-based (no LLM calls) and each attack is alerted once, even as more matching lines arrive. Dashboard refreshes (all five agents) run when Live scan starts and on new alerts, at most every 20 seconds, and are rule-based unless you tick *Use the LLM for these refreshes*. Untick *Refresh the dashboard on new alerts* to get alerts only.
+No. Detection is rule-based (no LLM calls) and an attack found in a log that keeps growing is alerted once, even as more matching lines arrive. The exception is lines you add yourself with **⚡ Add example** or the paste box: those alert every time (marked "↻ added again" when the same attack was already reported), because adding test data is a deliberate action. Dashboard refreshes (all five agents) run when Live scan starts and on new alerts, at most every 20 seconds, and are rule-based unless you tick *Use the LLM for these refreshes*. Untick *Refresh the dashboard on new alerts* to get alerts only.
+
+**I pasted the same example logs again (or pasted them after using Add example) and nothing alerted. Why?**
+Older versions reported an attack once per type and source, so a second copy of the same attack was recognised but stayed silent, and the folder's old contents (the baseline from when Live scan started) silenced it too. Now every ⚡ Add example click and every paste alerts for the attacks it contains, even if they were reported before, and those alerts say **↻ added again**. Attacks that are new still alert through the normal path, so nothing is ever alerted twice for one paste, and an unrelated earlier attack is not re-announced by a different paste. **🧹 Clear live logs** empties the files and also starts the live scan over (counters, alerts and the memory of what was already reported go back to zero), so you can run a clean demo again.
 
 **I pasted some log lines and the panel says "Lines read 6, Detections 0". Why?**
 Reading a line and detecting an attack are different things, and the live panel tells you which case you are in:
