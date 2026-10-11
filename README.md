@@ -1,4 +1,4 @@
-# Cyber Security AI Agent (SecAgents) : A Multi-Agent Cyber Security AI system
+# Cyber Security AI Agent (SecAgents) : A Multi-Agent Cyber Security AI system (Common Vulnerabilities and Exposures (CVE))
 <img width="1200" height="200" alt="banner_scan" src="https://github.com/user-attachments/assets/b35e566f-cac6-437d-81c2-0aa5a2a0d102" />
 
 ## Overview:
