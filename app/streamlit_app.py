@@ -21,39 +21,58 @@ import streamlit as st
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 
-def _drop_stale_secagents_modules() -> None:
-    """Reload the secagents package when its source changed since it was imported.
+# After a code update (a push to Streamlit Cloud, or a save while running locally) Streamlit re-runs this script but
+# keeps already-imported modules in memory. A new app can then meet an old copy of a secagents module and fail with
+# "ImportError: cannot import name ... from 'secagents.live'" until the whole process is restarted. Two guards below
+# make the app load the current files by itself.
+def _drop_secagents_modules() -> None:
+    for name in [m for m in sys.modules if m == "secagents" or m.startswith("secagents.")]:
+        del sys.modules[name]
 
-    After a code update (a push to Streamlit Cloud, or a save while running locally) Streamlit re-runs this script
-    but keeps already-imported modules in memory. A new app then meets an old module and fails with
-    "ImportError: cannot import name ... from 'secagents.live'" until the process is restarted. Comparing a
-    fingerprint of the source files with the one from the previous run lets us drop the old modules, so the imports
-    below load the current files. Nothing happens while the code is unchanged, so state is kept between reruns.
+
+def _drop_stale_secagents_modules() -> None:
+    """Guard 1: reload the package when its source files changed since the previous run (handles silent changes too).
+
+    Compares a fingerprint of the source with the one from the last run; nothing happens while the code is unchanged,
+    so state is kept between reruns. It cannot help a process that was started by an older version of this app,
+    because that version recorded no fingerprint: guard 2 covers that case.
     """
     files = (Path(__file__).resolve().parent.parent / "secagents").rglob("*.py")
     fingerprint = hash(tuple(sorted((str(f), f.stat().st_mtime_ns, f.stat().st_size) for f in files)))
     previous = getattr(sys, "_secagents_source_fingerprint", None)
     sys._secagents_source_fingerprint = fingerprint
     if previous is not None and previous != fingerprint:
-        for name in [m for m in sys.modules if m == "secagents" or m.startswith("secagents.")]:
-            del sys.modules[name]
+        _drop_secagents_modules()
+
+
+def _import_secagents() -> dict:
+    """Every import from the secagents package, together, so they can be retried as one unit."""
+    from secagents import history
+    from secagents.config import settings
+    from secagents.exporters import MIME as EXPORT_MIME, export
+    from secagents.graph import default_inputs, stream
+    from secagents.live import (
+        ALL_EXAMPLES, EXAMPLE_FILES, FORMAT_EXAMPLES, KIND_FILE, LIVE_LOG_FILES, LogTailer, ReplayFeed, append_log_lines,
+        append_routed, clear_live_logs, example_text, live_log_paths, repair_live_logs, route_lines, to_alert,
+    )
+    from secagents.llm import get_router
+    from secagents.qa import ask
+    from secagents.rag import embedding_backend, set_embedding_key
+    from secagents.repo_scan import browse_folder, collect_repo_inputs, find_logs, ignore_entries
+    from secagents.sources import SourceError, classify as classify_source, resolve as resolve_source
+
+    return dict(locals())
 
 
 _drop_stale_secagents_modules()
-
-from secagents import history  # noqa: E402
-from secagents.exporters import MIME as EXPORT_MIME, export  # noqa: E402
-from secagents.config import settings  # noqa: E402
-from secagents.graph import default_inputs, stream  # noqa: E402
-from secagents.live import (  # noqa: E402
-    ALL_EXAMPLES, EXAMPLE_FILES, FORMAT_EXAMPLES, KIND_FILE, LIVE_LOG_FILES, LogTailer, ReplayFeed, append_log_lines,
-    append_routed, clear_live_logs, example_text, live_log_paths, repair_live_logs, route_lines, to_alert,
-)
-from secagents.llm import get_router  # noqa: E402
-from secagents.qa import ask  # noqa: E402
-from secagents.rag import embedding_backend, set_embedding_key  # noqa: E402
-from secagents.repo_scan import browse_folder, collect_repo_inputs, find_logs, ignore_entries  # noqa: E402
-from secagents.sources import SourceError, classify as classify_source, resolve as resolve_source  # noqa: E402
+try:
+    globals().update(_import_secagents())
+except ImportError:
+    # Guard 2: the process still holds an older secagents module than this app expects (it was started by an earlier
+    # version of the app). Drop every secagents module and import everything again, so old and new modules are never
+    # mixed. A genuine error (a name that exists nowhere) fails the second attempt too and is raised as usual.
+    _drop_secagents_modules()
+    globals().update(_import_secagents())
 
 st.set_page_config(page_title="Cyber Security AI Agent", page_icon="🛡️", layout="wide")
 
