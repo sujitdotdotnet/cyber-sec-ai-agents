@@ -78,7 +78,7 @@ cp .env.example .env        # add ANTHROPIC_API_KEY / OPENAI_API_KEY / OPENROUTE
 
 streamlit run app/streamlit_app.py     # dashboard
 python -m secagents --json results.json  # CLI: writes security_report.md (add --docx r.docx --xlsx r.xlsx --pdf r.pdf)
-pytest                                  # 109 tests, no API keys needed
+pytest                                  # 137 tests, no API keys needed
 ```
 
 The CLI accepts your own data: `python -m secagents --logs /var/log/auth.log access.log --code ./src --requirements requirements.txt --dockerfile Dockerfile --config my_config.yaml`.
@@ -87,7 +87,7 @@ The dashboard also has an **Upload my own files** mode, a **Scan a whole folder 
 **Live scan** (switch under *Run assessment*): keeps watching the logs instead of analysing them once. Every few seconds it reads only the new lines of each log file, re-runs the Log Monitor's rules (no LLM, so it is cheap), and raises an alert the first time each attack appears; the same attack is never alerted twice. It also refreshes the whole dashboard: all five agents run once when Live scan starts (so the Incidents, Log detections, Code & config findings and CVE counters exist straight away) and again on every new alert, at most every 20 seconds. These refreshes are rule-based by default (seconds, no model calls; tick *Use the LLM* for LLM-written text) and each is saved to Scan history. The live panel shows the same counters as the Overview tab. Three ways to feed it:
 
 - **🎬 Simulation mode** (switch shown once Live scan is on): replays the existing demo logs gradually as a simulated live feed. Nothing to set up.
-- **Test it: paste log lines** (default when Simulation is off): follows the `live_logs/` folder (`LIVE_LOGS_DIR` to move it). Paste attack lines into the sidebar box and press **Append to log**, or append to those files yourself. Copy-paste examples are in [`samples/live_examples/`](samples/live_examples/README.md).
+- **Test it: paste log lines** (default when Simulation is off): follows the `live_logs/` folder (`LIVE_LOGS_DIR` to move it). Paste attack lines into the sidebar box and press **Append to log** (the default **Auto-detect** sends each line to `auth.log`, `nginx_access.log` or `firewall.log` by what it looks like, so you cannot pick the wrong file), or append to those files yourself. Copy-paste examples are in [`samples/live_examples/`](samples/live_examples/README.md).
 - **A folder path**: enter a **Repository folder path** and its real log files are followed. Files uploaded in the browser are fixed copies and cannot be followed.
 
 Existing log content is treated as the baseline, so switch Live scan on first; only activity after that raises alerts.
@@ -290,7 +290,7 @@ Switch on **Live scan** under *Run assessment*. Turn on **🎬 Simulation mode**
 Both show whether a scan is running. Idle: still banner and a red dot. Scanning (an assessment is running, or Live scan or Simulation is on): animated banner and a pulsing green dot.
 
 **What can I paste to test Live scan?**
-See `samples/live_examples/`: SSH brute force followed by a compromise and a backdoor account (`auth.log`), SQL injection / path traversal / XSS / command injection / Log4Shell / sqlmap (`nginx_access.log`), and a port scan plus a large outbound transfer to port 4444 (`firewall.log`). Pasted into the matching log, together they raise 14 alerts.
+You do not have to paste anything: in the sidebar's **Test it** box pick an example under **Add a ready-made attack** and press **⚡ Add example**. There are three examples (their log lines are the `.txt` files in `samples/live_examples/`): an SSH brute force that ends in a compromise and a backdoor account, a set of web attacks, and a port scan with large outbound traffic. Together they raise 14 alerts. If you copy lines yourself, copy the contents of those `.txt` files. Descriptive text from a README is not log data: pasted into the box it gives "None of the pasted text looks like log lines", and typed straight into a live log it shows up as ignored lines that **🧹 Fix the live logs** removes.
 
 **Does Live scan alert on attacks that are already in the logs?**
 No. Existing content is the baseline; only attacks that appear after you switch it on raise alerts. Run an assessment first if you also want the existing history analysed.
@@ -298,8 +298,16 @@ No. Existing content is the baseline; only attacks that appear after you switch 
 **Will it spam me or run the LLM constantly?**
 No. Detection is rule-based (no LLM calls) and each attack is alerted once, even as more matching lines arrive. Dashboard refreshes (all five agents) run when Live scan starts and on new alerts, at most every 20 seconds, and are rule-based unless you tick *Use the LLM for these refreshes*. Untick *Refresh the dashboard on new alerts* to get alerts only.
 
-**I pasted a few log lines and nothing happened. Why?**
-The detection rules need patterns, not single lines: for example 10+ failed SSH logins from one IP, a web request carrying SQL injection, or a port scan across 10+ ports. The panel shows how many lines were read per file and says when no pattern has matched yet. Paste the full example files from `samples/live_examples/` (or the one-line quick tests) to see alerts and counters change.
+**I pasted some log lines and the panel says "Lines read 6, Detections 0". Why?**
+Reading a line and detecting an attack are different things, and the live panel tells you which case you are in:
+- **The lines were understood but do not add up to an attack yet.** The rules look for patterns, e.g. 10+ failed SSH logins from one IP, a web request carrying SQL injection or Log4Shell, a root-level account being created, or a port scan across 10+ ports. The panel shows progress ("6 failed SSH logins from 203.0.113.45 so far; a brute-force alert is raised at 10") and the line counts per file ("auth.log: 6 read, 6 understood"). Paste more, or the full files in `samples/live_examples/`.
+- **The lines are in the wrong file.** For example firewall lines pasted into `auth.log` are read but ignored by that file's parser. The panel warns ("auth.log: 6 line(s) are ignored. 6 look like firewall.log lines…") and so does the paste box. Use **Auto-detect**, which routes every line to the right file for you.
+- **The lines are in a format the detectors do not know.** The supported formats are classic syslog (`Oct 10 11:20:01 host sshd[1]: …`), nginx/Apache combined access logs, and UFW firewall lines. Modern ISO-8601 timestamps (`2026-10-11T10:00:01+00:00 host sshd[1]: …`) are **not** supported yet. Auto-detect refuses such lines and shows the expected formats, and a file that already contains them shows the same warning.
+- **The lines are not log data at all.** Text copied from a README or a description (for example "SQL injection, path traversal, XSS…") is read but no parser understands it, so you get "N line(s) are not in a format the detectors understand" for that file. Press **🧹 Fix the live logs** under the warning: it keeps the lines the detectors read, **moves** lines that belong in another log (a firewall line in `auth.log` goes to `firewall.log`, and then counts), and removes the rest. It only ever touches the `live_logs/` folder, never a real log you pointed Live scan at. **🧹 Clear live logs** in the paste box empties all three files instead.
+
+An expander, **Latest lines read**, lists the last ten lines with a ✅ (understood) or ⚠️ (ignored) so you can see exactly what the tailer saw.
+
+Two kinds of message, so you can tell them apart: the per-file warnings in the live panel (for example "nginx_access.log: 1 line(s) are not in a format…") describe the files **as they are now** and disappear once the files are clean; the green/orange messages in the paste box (for example "None of the pasted text looks like log lines…") describe **the one action you just took**, appear right after the click, and are gone on the next refresh.
 
 **Why do the counters (incidents, detections, code findings, CVEs) update only after a moment?**
 They come from a full assessment, not from the tailer. Live scan runs one when it starts and again after new alerts (a short debounce applies). While Live scan follows real files, **Run assessment** analyses those same files.

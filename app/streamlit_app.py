@@ -25,7 +25,8 @@ from secagents.exporters import MIME as EXPORT_MIME, export  # noqa: E402
 from secagents.config import settings  # noqa: E402
 from secagents.graph import default_inputs, stream  # noqa: E402
 from secagents.live import (  # noqa: E402
-    LIVE_LOG_FILES, LogTailer, ReplayFeed, append_log_lines, clear_live_logs, live_log_paths, to_alert,
+    ALL_EXAMPLES, EXAMPLE_FILES, FORMAT_EXAMPLES, KIND_FILE, LIVE_LOG_FILES, LogTailer, ReplayFeed, append_log_lines,
+    append_routed, clear_live_logs, example_text, live_log_paths, repair_live_logs, route_lines, to_alert,
 )
 from secagents.llm import get_router  # noqa: E402
 from secagents.qa import ask  # noqa: E402
@@ -163,12 +164,68 @@ def reset_live() -> None:
     st.session_state.pop("live", None)
 
 
+PASTE_AUTO = "Auto-detect (recommended)"
+
+
+def clear_live_logs_ui() -> None:
+    """Button callback: empty the live logs and forget the old paste messages that no longer apply."""
+    clear_live_logs()
+    st.session_state["paste_note"], st.session_state["paste_warn"] = "Cleared the live logs.", ""
+
+
+def fix_live_logs() -> None:
+    """Button callback: clean the live_logs files in place (see secagents.live.repair_live_logs)."""
+    r = repair_live_logs()
+    st.session_state["paste_note"] = (f"Fixed the live logs: kept {r['kept']} line(s), moved {r['moved']} to the right file, "
+                                      f"removed {r['dropped']} that no detector can read.")
+    st.session_state["paste_warn"] = ""
+
+
+def append_example(example_key: str) -> None:
+    """Button callback: write a ready-made attack (from samples/live_examples) into the live logs."""
+    name = st.session_state.get(example_key, ALL_EXAMPLES)
+    written, _ = append_routed(example_text(name))
+    st.session_state["paste_note"] = (f"Added the example '{name.split(' (')[0]}': "
+                                      + ", ".join(f"{n} → {f}" for f, n in written.items()) + ".")
+    st.session_state["paste_warn"] = ""
+
+
+def format_help(files: list[str]) -> str:
+    return " ".join(f"{f}: `{FORMAT_EXAMPLES[f]}`" for f in files)
+
+
 def append_pasted(text_key: str, target_key: str) -> None:
-    """Button callback: write the pasted lines to the chosen live log, then empty the box."""
-    text, target = st.session_state.get(text_key, ""), st.session_state.get(target_key, LIVE_LOG_FILES[0])
-    n = append_log_lines(target, text)
+    """Button callback: write the pasted lines to the live log(s), then empty the box.
+
+    Auto-detect sends each line to the log it belongs in. With a fixed file, lines that look like a different log
+    are still written (it is the user's choice) but flagged, because that file's parser would silently skip them.
+    """
+    text, target = st.session_state.get(text_key, ""), st.session_state.get(target_key, PASTE_AUTO)
     st.session_state[text_key] = ""
-    st.session_state["paste_note"] = f"Appended {n} line(s) to {target}." if n else "Nothing to append: paste some log lines first."
+    note, warn = "", ""
+    if target == PASTE_AUTO:
+        written, ignored = append_routed(text)
+        if written:
+            note = f"Appended {sum(written.values())} line(s): " + ", ".join(f"{n} → {f}" for f, n in written.items()) + "."
+        if ignored and not written:
+            warn = (f"None of the pasted text looks like log lines (first: `{ignored[0][:90]}`). If you copied it from a README, "
+                    "that describes what the examples detect and is not log data: use **Add a ready-made attack** below. "
+                    "Real lines look like: " + format_help(list(FORMAT_EXAMPLES)))
+        elif ignored:
+            warn = (f"{len(ignored)} line(s) were not added: no parser understands their format (first: `{ignored[0][:90]}`). "
+                    "Expected formats: " + format_help(list(FORMAT_EXAMPLES)))
+        if not written and not ignored:
+            note = "Nothing to append: paste some log lines first."
+    else:
+        n = append_log_lines(target, text)
+        note = f"Appended {n} line(s) to {target}." if n else "Nothing to append: paste some log lines first."
+        routed, ignored = route_lines(text)
+        elsewhere = {f: len(ls) for f, ls in routed.items() if f != target}
+        if elsewhere or ignored:
+            parts = [f"{c} look like {f} lines" for f, c in elsewhere.items()] + ([f"{len(ignored)} are in no known format"] if ignored else [])
+            warn = (f"Of the lines added to {target}, " + " and ".join(parts) + ", so its parser will ignore them. "
+                    "Use Auto-detect to send each line to the right file.")
+    st.session_state["paste_note"], st.session_state["paste_warn"] = note, warn
 
 
 def pick_folder(key: str) -> None:
@@ -343,21 +400,35 @@ with st.sidebar:
                                    key=f"live-llm-{nonce}", disabled=not live_auto,
                                    help="Off: the agents use their rule-based output, so counters update in seconds with "
                                         "no model calls. Press Run assessment for a full LLM-written report.")
+        # Messages about the last paste / example / fix are shown once, on the rerun the click causes, then dropped. They
+        # describe one action, not the current state, so keeping them would leave a stale error on screen after the
+        # files are fixed. (The per-file warnings in the live panel are recomputed from the files and clear by themselves.)
+        paste_note, paste_warn = st.session_state.pop("paste_note", ""), st.session_state.pop("paste_warn", "")
         if not sim_on and not repo_path:
             # default target: a writable folder the tailer follows, so attacks can be pasted in
             with st.expander("🧪 Test it: paste log lines", expanded=True):
-                st.caption(f"Live scan is following `{settings.live_dir}`. Paste attack lines (examples in "
-                           "`samples/live_examples/`) and append them to the matching log.")
-                st.selectbox("Append to", LIVE_LOG_FILES, key=f"paste-target-{nonce}")
+                st.caption(f"Live scan is following `{settings.live_dir}`. Add a ready-made attack in one click, or paste "
+                           "your own log lines below.")
+                example_key = f"example-{nonce}"
+                st.selectbox("Add a ready-made attack", [ALL_EXAMPLES, *EXAMPLE_FILES], key=example_key,
+                             help="Real log lines from samples/live_examples/, routed to the right files. No copying needed.")
+                st.button("⚡ Add example", key=f"example-go-{nonce}", on_click=append_example, args=(example_key,),
+                          use_container_width=True, type="primary")
+                st.markdown("**Or paste your own log lines**")
+                st.selectbox("Append to", [PASTE_AUTO, *LIVE_LOG_FILES], key=f"paste-target-{nonce}",
+                             help="Auto-detect looks at each line and writes it to auth.log, nginx_access.log or firewall.log "
+                                  "as appropriate. A line in the wrong file is read but ignored by that file's parser.")
                 st.text_area("Log lines", key=f"paste-text-{nonce}", height=130,
                              placeholder='Oct 10 11:20:01 web-01 sshd[7101]: Failed password for root from 203.0.113.45 port 40211 ssh2')
                 cols = st.columns(2)
                 cols[0].button("➕ Append to log", key=f"paste-go-{nonce}", on_click=append_pasted,
                                args=(f"paste-text-{nonce}", f"paste-target-{nonce}"), use_container_width=True)
-                cols[1].button("🧹 Clear live logs", key=f"paste-clear-{nonce}", on_click=clear_live_logs,
+                cols[1].button("🧹 Clear live logs", key=f"paste-clear-{nonce}", on_click=clear_live_logs_ui,
                                use_container_width=True, help="Empty all three files and start again")
-                if note := st.session_state.get("paste_note", ""):  # stays until the next append
-                    st.success(note)
+                if paste_note:
+                    st.success(paste_note)
+                if paste_warn:
+                    st.warning(paste_warn)
 
     scans = history.list_scans()
     active = st.session_state.get("scan", {}).get("id")
@@ -526,12 +597,39 @@ def live_panel(mode: str, folder: str, excludes: str, base_inputs: dict, source_
                        "To monitor logs as they grow, use a local folder or a network share.")
         else:
             st.caption(f"Following the log files in `{folder.strip()}`.")
-        per_file = " · ".join(f"{n} {c}" for n, c in tailer.read_by_file.items()) or "no lines yet"
-        st.caption(f"Lines read per file: {per_file}. Last checked {datetime.now():%H:%M:%S}.")
-        if tailer.lines_read and not live["alerts"]:
-            st.caption("No attack pattern yet. The rules look for patterns, e.g. 10+ failed SSH logins from one IP, "
-                       "a web request carrying SQL injection, or a port scan. Paste more lines or use "
-                       "`samples/live_examples/`.")
+        per_file = " · ".join(f"{n}: {c} lines, {tailer.recognised_by_file.get(n, 0)} understood"
+                              for n, c in tailer.current_by_file.items()) or "no lines yet"
+        st.caption(f"{per_file}. Last checked {datetime.now():%H:%M:%S}.")
+        # Lines no parser understands are skipped silently, so say so (and where they belong) instead of looking idle.
+        file_for = {kind: name for kind, name in KIND_FILE.items()}
+        ignored_somewhere = False
+        for name in tailer.current_by_file:
+            bad = tailer.unrecognised(name)
+            if not bad:
+                continue
+            ignored_somewhere = True
+            wrong = tailer.misfiled.get(name)
+            if wrong:
+                belongs = ", ".join(f"{n} look like {file_for[k]} lines" for k, n in wrong.items())
+                st.warning(f"{name}: {bad} line(s) are ignored. {belongs}, which this file's parser cannot read. "
+                           f"Move them to the right file, or paste with Auto-detect.")
+            else:
+                st.warning(f"{name}: {bad} line(s) are not in a format the detectors understand, so they are ignored. "
+                           f"Expected: `{FORMAT_EXAMPLES.get(name, 'a syslog, nginx access or UFW line')}`")
+        if ignored_somewhere and mode == "files":  # only the app's own test folder is ever rewritten, never a real log
+            st.button("🧹 Fix the live logs", key="live-fix", on_click=fix_live_logs, type="primary",
+                      help="Keeps the lines the detectors read, moves lines that belong in another log to it, and removes "
+                           "the rest (for example text copied from a README). Only touches the live_logs folder.")
+        for msg in tailer.building_up():
+            st.info(f"⏳ {msg}.")
+        if tailer.lines_read and not live["alerts"] and not tailer.building_up() and not ignored_somewhere:
+            st.caption("The lines were understood but match no attack pattern yet. The rules look for patterns, e.g. a "
+                       "web request carrying SQL injection or Log4Shell, a root-level account being created, a port scan "
+                       "across 10+ ports, or 10+ failed SSH logins from one IP. Samples: `samples/live_examples/`.")
+        if tailer.recent:
+            with st.expander(f"Latest lines read ({len(tailer.recent)})"):
+                for name, line, ok in reversed(tailer.recent):
+                    st.markdown(f"{'✅' if ok else '⚠️'} `{name}` · `{line[:140]}`")
         res = st.session_state.get("result")
         if res:  # the same counters as the Overview tab, refreshed after every live assessment
             k = st.columns(4)

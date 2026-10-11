@@ -43,6 +43,32 @@ BRUTE_FORCE_WINDOW = timedelta(minutes=10)
 PORT_SCAN_THRESHOLD = 10
 
 
+def line_kind(line: str) -> str | None:
+    """Which kind of log a line is in: 'web' (nginx/apache access), 'firewall' (UFW), 'auth' (syslog) or None.
+
+    A line that is none of these is skipped by every parser, so callers can use this to tell the user that lines
+    were read but are in a format the detectors do not understand.
+    """
+    if NGINX_RE.match(line):
+        return "web"
+    if SYSLOG_RE.match(line):
+        return "firewall" if UFW_RE.search(line) else "auth"
+    return None
+
+
+def recognised(file_name: str, line: str) -> bool:
+    """True if the parser chosen by this file's name can read the line (the same routing as detect_named)."""
+    name = file_name.lower()
+    kind = line_kind(line)
+    if "auth" in name or "secure" in name:
+        return kind == "auth"  # firewall lines are syslog too, but belong in a firewall log: here they would be ignored
+    if "access" in name or "nginx" in name or "apache" in name:
+        return kind == "web"
+    if "firewall" in name or "ufw" in name or "iptables" in name:
+        return kind == "firewall"
+    return kind is not None
+
+
 def is_internal(ip: str) -> bool:
     try:
         addr = ipaddress.ip_address(ip)
