@@ -71,6 +71,7 @@ flowchart LR
 ## Quick start
 
 ```bash
+Rename the .env.example file to .env and configure your APIKey.
 python -m venv .venv && source .venv/bin/activate
 pip install -r requirements.txt
 cp .env.example .env        # add ANTHROPIC_API_KEY / OPENAI_API_KEY / OPENROUTER_API_KEY
