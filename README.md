@@ -1,26 +1,27 @@
-# Cyber Security AI Agent (SecAgents) : A multi-agent Cyber Security AI system
+# Cyber Security AI Agent (SecAgents) : A Multi-Agent Cyber Security AI system
+<img width="1200" height="200" alt="banner_scan" src="https://github.com/user-attachments/assets/b35e566f-cac6-437d-81c2-0aa5a2a0d102" />
 
 ## Overview:
 
 **What it is:** 
 
-SecAgents is a multi-agent cyber security assistant. Five AI agents (Log Monitor, Threat Intelligence, Vulnerability Scanner, Incident Response and Policy Checker) work together to find attacks, check whether you're affected, and tell you what to fix.
+SecAgents is a multi-agent cyber security assistant powered by **Five AI agents (Log Monitor, Threat Intelligence, Vulnerability Scanner, Incident Response and Policy Checker)** work together to find attacks, check whether you're affected, and tell you what to fix.
 
 **How it works:** 
 
-A LangGraph supervisor runs the agents in dependency order, and agentic RAG grounds them in CVE, MITRE ATT&CK and NIST / ISO 27001 / SOC 2 knowledge. Detection is rule-based first, with an LLM adding narrative and remediation. It works with OpenRouter, Claude or OpenAI, with automatic fallback, and still runs fully offline with no API key.
+A **LangGraph** supervisor runs the agents in dependency order, and **Agentic RAG** grounds them in **CVE, MITRE ATT&CK and NIST / ISO 27001 / SOC 2** knowledge. Detection is rule-based first, with an LLM adding narrative and remediation. It works with **OpenRouter, Claude or OpenAI**, with automatic fallback, and still runs fully offline with no API key.
 
 **What you get:** 
 
-An assessment from your logs, code, dependencies, Dockerfile and config. It covers a prioritized incident playbook (NIST SP 800-61), compliance scores per framework, and a report you can download as Word, Excel, PDF, Markdown or JSON.
+An assessment from your logs, code, dependencies, Dockerfile and config. It covers a prioritized incident playbook (NIST SP 800-61), compliance scores per framework, and a report you can download as **Word, Excel, PDF, Markdown or JSON**.
 
 **Real-time:** 
 
-The Streamlit dashboard has a Live scan that follows log files as they grow and alerts the first time each attack appears. It also has a Simulation mode and a paste box for trying attack lines.
+The **Streamlit** dashboard has a Live scan that follows log files as they grow and alerts the first time each attack appears. It also has a Simulation mode and a paste box for trying attack lines.
 
 **Where it runs:** 
 
-The dashboard runs on a long-lived host. A FastAPI version of the same agents runs on serverless hosts such as Vercel, and the project has 74 tests.
+The dashboard runs on a long-lived **Streamlit** host and the project has 74 tests.
 
 
 
