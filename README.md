@@ -78,7 +78,7 @@ cp .env.example .env        # add ANTHROPIC_API_KEY / OPENAI_API_KEY / OPENROUTE
 
 streamlit run app/streamlit_app.py     # dashboard
 python -m secagents --json results.json  # CLI: writes security_report.md (add --docx r.docx --xlsx r.xlsx --pdf r.pdf)
-pytest                                  # 103 tests, no API keys needed
+pytest                                  # 109 tests, no API keys needed
 ```
 
 The CLI accepts your own data: `python -m secagents --logs /var/log/auth.log access.log --code ./src --requirements requirements.txt --dockerfile Dockerfile --config my_config.yaml`.
@@ -172,6 +172,9 @@ Security engineers, DevOps and IT teams who want to see how GenAI can automate t
 
 **Do I need an API key?**
 No. Every agent detects with rule-based logic first and uses the LLM only for correlation, write-ups and suggestions. With no key (or `SECAGENTS_OFFLINE=1`) the whole pipeline still completes, with plainer text. Any one of the three providers is enough.
+
+**What happens in the dashboard when no API key is found?**
+If the selected provider has no key, neither typed in the **API key** box nor in `.env`, the sidebar shows a red error ("No API key found for <provider>…"), a toast appears (once per provider, not on every rerun), and the key box gets a red outline. The message also says what will happen: it names the fallback provider if another one has a key, otherwise that the agents run in rule-based mode. It is a warning, not a block: **Run assessment** still works. The alert clears as soon as you type a key or add one to `.env`. With `SECAGENTS_OFFLINE=1` there is no alert, because running without a model is then a deliberate choice.
 
 **Is it an audit or a certified scanner?**
 No. It is a demonstration. Detections, the CVE list (16 entries) and the control library (40 controls) are small, curated and indicative. Do not use the scores as audit evidence.

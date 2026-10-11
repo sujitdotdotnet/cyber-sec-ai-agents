@@ -206,8 +206,9 @@ with st.sidebar:
     # API key box for the selected provider; a key typed here beats the .env key, which stays the fallback.
     # Each provider keeps its own box value, so switching the dropdown never sends one provider's key to another.
     chosen = router.preferred
+    key_box = f"apikey-{chosen}-{nonce}"
     typed = st.text_input(
-        f"API key for {chosen}", type="password", key=f"apikey-{chosen}-{nonce}",
+        f"API key for {chosen}", type="password", key=key_box,
         placeholder="Leave empty to use the key from .env",
         help="Used first for this provider. If empty, the key in .env is used. Kept in this session only: it is "
              "never saved to disk or to Scan history.",
@@ -215,9 +216,25 @@ with st.sidebar:
     router.key_overrides = {
         p: (typed if p == chosen else st.session_state.get(f"apikey-{p}-{nonce}", "")).strip() for p in options
     }
-    source_note = {"typed": "🔑 using the key you entered", ".env": "using the key from .env",
-                   "none": "no key: add one above or in .env, otherwise rule-based mode"}[router.key_source(chosen)]
-    st.caption(f"{chosen}: {source_note}")
+    # No key for the selected provider (neither typed nor in .env): say so loudly, once as a toast, always as an error,
+    # and outline the box. Offline mode is a deliberate choice to run without a model, so it is not an error.
+    key_missing = router.key_source(chosen) == "none" and not settings.offline
+    key_box_css = ""
+    if key_missing:
+        fallbacks = [p for p in router.ordered_providers() if p != chosen and router.key_source(p) != "none"]
+        what_happens = (f"Falling back to {fallbacks[0]}." if fallbacks
+                        else "No provider has a key, so the agents run in rule-based mode (no LLM).")
+        st.error(f"No API key found for {chosen}. Add one in the box above or in .env. {what_happens}", icon="🔑")
+        if st.session_state.get("key_toast") != chosen:  # toast once per provider, not on every rerun
+            st.toast(f"No API key found for {chosen}", icon="🚨")
+            st.session_state["key_toast"] = chosen
+        key_box_css = (f".st-key-{key_box} div[data-baseweb='input']{{border:2px solid #e74c3c !important;"
+                       f"box-shadow:0 0 0 4px rgba(231,76,60,.28);background:rgba(231,76,60,.08)}}")
+    else:
+        st.session_state.pop("key_toast", None)
+        source_note = {"typed": "🔑 using the key you entered", ".env": "using the key from .env"}[router.key_source(chosen)] \
+            if router.key_source(chosen) != "none" else "rule-based mode (offline)"
+        st.caption(f"{chosen}: {source_note}")
     set_embedding_key(router.key_overrides.get("openai", ""))  # an OpenAI key typed here also drives RAG embeddings
     providers = router.available_providers()
     st.markdown("**Active providers:** " + (", ".join(providers) if providers else "none (rule-based mode)"))
@@ -360,7 +377,7 @@ with st.sidebar:
         if active:
             st.button("Delete the open scan", key="del-active", on_click=delete_scan, args=(active,),
                       use_container_width=True)
-    st.markdown(APP_CSS, unsafe_allow_html=True)
+    st.markdown(APP_CSS + (f"<style>{key_box_css}</style>" if key_box_css else ""), unsafe_allow_html=True)
 
 # ---- header: title, then the banner (a still when idle, an animated GIF while any scan is running) ----
 st.title("🛡️ Cyber Security AI Agent")
@@ -430,6 +447,8 @@ def run_assessment(inputs: dict, name: str, source_label: str, use_llm: bool = T
 
 
 if run:
+    if key_missing:
+        st.toast(f"No API key found for {chosen}: running without it", icon="🚨")
     if repo_folder.strip() and not repo_path:
         st.error("The folder path or link in the sidebar could not be opened. Fix it, or clear it to scan the other inputs.")
         st.stop()
