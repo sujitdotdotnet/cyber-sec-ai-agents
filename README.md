@@ -1,9 +1,28 @@
-# SecAgents: a multi-agent Cyber Security AI system
+# Cyber Security AI Agent (SecAgents) : A multi-agent Cyber Security AI system
 
-Five AI agents that monitor logs, look up threats, scan for vulnerabilities, plan the incident
-response and check compliance, orchestrated with **LangGraph** and grounded with **agentic RAG**
-over CVE, MITRE ATT&CK and NIST / ISO 27001 / SOC 2 knowledge. Works with **Claude, OpenAI and
-OpenRouter**, with automatic failover between them.
+## Overview:
+
+**What it is:** 
+
+SecAgents is a multi-agent cyber security assistant. Five AI agents (Log Monitor, Threat Intelligence, Vulnerability Scanner, Incident Response and Policy Checker) work together to find attacks, check whether you're affected, and tell you what to fix.
+
+**How it works:** 
+
+A LangGraph supervisor runs the agents in dependency order, and agentic RAG grounds them in CVE, MITRE ATT&CK and NIST / ISO 27001 / SOC 2 knowledge. Detection is rule-based first, with an LLM adding narrative and remediation. It works with OpenRouter, Claude or OpenAI, with automatic fallback, and still runs fully offline with no API key.
+
+**What you get:** 
+
+An assessment from your logs, code, dependencies, Dockerfile and config. It covers a prioritized incident playbook (NIST SP 800-61), compliance scores per framework, and a report you can download as Word, Excel, PDF, Markdown or JSON.
+
+**Real-time:** 
+
+The Streamlit dashboard has a Live scan that follows log files as they grow and alerts the first time each attack appears. It also has a Simulation mode and a paste box for trying attack lines.
+
+**Where it runs:** 
+
+The dashboard runs on a long-lived host. A FastAPI version of the same agents runs on serverless hosts such as Vercel, and the project has 74 tests.
+
+
 
 | Agent | What it does |
 |---|---|
@@ -12,6 +31,8 @@ OpenRouter**, with automatic failover between them.
 | 🌐 **Threat Intelligence** | Answers *"are we affected?"*: version-matches the inventory against CVEs, uses agentic RAG to identify which CVE an exploit attempt targets and whether that component is deployed, correlates attacks in the logs with weaknesses in the code, and checks IOCs. |
 | 🚨 **Incident Response** | Declares prioritized incidents and generates a NIST SP 800-61 playbook (analysis, containment, eradication, recovery, post-incident) with concrete commands for the actual attacker IPs, accounts and hosts. |
 | 📋 **Policy Checker** | Evaluates 20 technical checks against 40 controls in NIST 800-53, NIST CSF 2.0, ISO 27001:2022 and SOC 2; scores each framework and writes a remediation roadmap ranked by how many controls each fix closes. |
+
+<img width="1920" height="1032" alt="CyberSecurityAIAgent-Deployed2" src="https://github.com/user-attachments/assets/e71fee49-ced9-4822-aa94-df3d828b3811" />
 
 ## Architecture
 
@@ -85,7 +106,7 @@ Every assessment is saved to `.history/` (set `HISTORY_DIR` to move it) and list
 
 Expected outcome: overall risk **CRITICAL**, 3 incidents (SSH compromise P1, web exploitation P1, vulnerable components P2), the SQL injection, path traversal and command injection attacks matched to the exact vulnerable lines in `app.py`, Log4Shell correctly reported as *attempted but not affected*, 9 CVEs in the inventory, and compliance scores between roughly 20% and 45%.
 
-## Project layout
+## Project layout / Tech Stack:
 
 ```
 secagents/
@@ -269,3 +290,25 @@ Add CVEs to `knowledge/cves.jsonl`, detections to `agents/log_monitor.py`, and c
 
 **What are the main dependencies?**
 LangGraph (orchestration), Chroma (vector store), Anthropic and OpenAI SDKs (OpenRouter uses the OpenAI SDK), Bandit (SAST), Streamlit, Altair and pandas (dashboard), and PyYAML.
+
+**Reports:**
+
+*PDF Report:*
+<img width="1917" height="998" alt="image" src="https://github.com/user-attachments/assets/ccc004d0-555e-4e0b-b55e-2d8a15a9598a" />
+
+*MS Word Report:*
+<img width="1917" height="1078" alt="image" src="https://github.com/user-attachments/assets/9018ce49-ce2f-4452-9b40-6bee83265085" />
+
+*Excel Report:*
+<img width="1918" height="1078" alt="image" src="https://github.com/user-attachments/assets/cf7a64e8-42d6-498e-af90-9dba0cc89f41" />
+
+*JSON Report:*
+<img width="1912" height="992" alt="image" src="https://github.com/user-attachments/assets/dd7c2910-5147-49e3-8cb5-9742b1a79f55" />
+
+*MD (Markdown) Report:*
+<img width="1915" height="990" alt="image" src="https://github.com/user-attachments/assets/81ddd672-aa52-4007-81cd-a80ee6ffc168" />
+
+
+
+
+
