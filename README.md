@@ -78,7 +78,7 @@ cp .env.example .env        # add ANTHROPIC_API_KEY / OPENAI_API_KEY / OPENROUTE
 
 streamlit run app/streamlit_app.py     # dashboard
 python -m secagents --json results.json  # CLI: writes security_report.md (add --docx r.docx --xlsx r.xlsx --pdf r.pdf)
-pytest                                  # 137 tests, no API keys needed
+pytest                                  # 138 tests, no API keys needed
 ```
 
 The CLI accepts your own data: `python -m secagents --logs /var/log/auth.log access.log --code ./src --requirements requirements.txt --dockerfile Dockerfile --config my_config.yaml`.
@@ -314,6 +314,9 @@ They come from a full assessment, not from the tailer. Live scan runs one when i
 
 **What is the `ConnectionResetError: [WinError 10054]` message in the terminal?**
 Harmless noise from Python's asyncio on Windows when the browser tab is closed or reloaded. The dashboard filters it out; it never indicates a scan failure.
+
+**After I pushed an update, the deployed app shows `ImportError: cannot import name '…' from 'secagents.live'`. Why?**
+Streamlit (locally and on Streamlit Cloud) re-runs the app script after a code update but keeps already-imported modules in memory, so a *new* `app/streamlit_app.py` can meet an *old* `secagents` module that does not have the names it imports. The files on GitHub are fine; the running process is stale. The app now detects this itself: at the start of every run it compares a fingerprint of the `secagents/` source files with the previous run's and, if they differ, drops the old modules so the current files are imported (nothing is reset while the code is unchanged). If a deployment that was started *before* this fix is stuck on the error, restart it once: **Manage app → ⋮ → Reboot app** on Streamlit Cloud, or stop and start `streamlit run` locally. After that, later pushes reload on their own. If the error persists after a reboot, open **Manage app** and read the full log: the message shown in the browser is redacted.
 
 **What happens when log files rotate?**
 If a file shrinks below the position already read, the tailer treats it as rotated and reads it again from the start. A line still being written is held back until its newline arrives.

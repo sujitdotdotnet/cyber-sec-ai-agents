@@ -20,6 +20,27 @@ import streamlit as st
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
+
+def _drop_stale_secagents_modules() -> None:
+    """Reload the secagents package when its source changed since it was imported.
+
+    After a code update (a push to Streamlit Cloud, or a save while running locally) Streamlit re-runs this script
+    but keeps already-imported modules in memory. A new app then meets an old module and fails with
+    "ImportError: cannot import name ... from 'secagents.live'" until the process is restarted. Comparing a
+    fingerprint of the source files with the one from the previous run lets us drop the old modules, so the imports
+    below load the current files. Nothing happens while the code is unchanged, so state is kept between reruns.
+    """
+    files = (Path(__file__).resolve().parent.parent / "secagents").rglob("*.py")
+    fingerprint = hash(tuple(sorted((str(f), f.stat().st_mtime_ns, f.stat().st_size) for f in files)))
+    previous = getattr(sys, "_secagents_source_fingerprint", None)
+    sys._secagents_source_fingerprint = fingerprint
+    if previous is not None and previous != fingerprint:
+        for name in [m for m in sys.modules if m == "secagents" or m.startswith("secagents.")]:
+            del sys.modules[name]
+
+
+_drop_stale_secagents_modules()
+
 from secagents import history  # noqa: E402
 from secagents.exporters import MIME as EXPORT_MIME, export  # noqa: E402
 from secagents.config import settings  # noqa: E402
