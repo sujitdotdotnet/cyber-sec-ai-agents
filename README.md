@@ -136,6 +136,13 @@ tests/
 - **New controls**: add a line to `knowledge/controls.jsonl` naming the checks that evidence it, and a check in `policy_checker.py` if needed.
 
 > All IP addresses are from RFC 5737 documentation ranges. The vulnerable app exists only to be scanned: do not deploy it.
+> Note: Update the latest CVEs from:
+
+https://www.cve.org/
+
+https://nvd.nist.gov/vuln 
+
+https://www.cisa.gov/known-exploited-vulnerabilities-catalog 
 
 ## Requirements checklist
 
