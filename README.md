@@ -33,7 +33,7 @@ The dashboard runs on a long-lived **Streamlit** host and the project has 74 tes
 | 🚨 **Incident Response** | Declares prioritized incidents and generates a NIST SP 800-61 playbook (analysis, containment, eradication, recovery, post-incident) with concrete commands for the actual attacker IPs, accounts and hosts. |
 | 📋 **Policy Checker** | Evaluates 20 technical checks against 40 controls in NIST 800-53, NIST CSF 2.0, ISO 27001:2022 and SOC 2; scores each framework and writes a remediation roadmap ranked by how many controls each fix closes. |
 
-<img width="1920" height="1032" alt="CyberSecurityAIAgent-Deployed2" src="https://github.com/user-attachments/assets/e71fee49-ced9-4822-aa94-df3d828b3811" />
+<img width="1912" height="1037" alt="image" src="https://github.com/user-attachments/assets/768c7377-34e2-4519-978c-6636bbe84afd" />
 
 ## Architecture
 
