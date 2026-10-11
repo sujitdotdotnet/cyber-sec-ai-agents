@@ -77,11 +77,11 @@ cp .env.example .env        # add ANTHROPIC_API_KEY / OPENAI_API_KEY / OPENROUTE
 
 streamlit run app/streamlit_app.py     # dashboard
 python -m secagents --json results.json  # CLI: writes security_report.md (add --docx r.docx --xlsx r.xlsx --pdf r.pdf)
-pytest                                  # 49 tests, no API keys needed
+pytest                                  # 103 tests, no API keys needed
 ```
 
 The CLI accepts your own data: `python -m secagents --logs /var/log/auth.log access.log --code ./src --requirements requirements.txt --dockerfile Dockerfile --config my_config.yaml`.
-The dashboard also has an **Upload my own files** mode, a **Scan a whole folder** option (type a path or press **Browse...**; the folder's `.gitignore` / `.ignore` entries are pre-filled into an editable, comma-separated exclude box) and an **Ask** tab for questions such as *"Are we affected by Log4Shell?"*.
+The dashboard also has an **Upload my own files** mode, a **Scan a whole folder or repository** option (type a local path, a Windows network share, a GitHub link or a public Google Drive folder link, or press **Browse...** for a local folder; the source's `.gitignore` / `.ignore` entries are pre-filled into an editable, comma-separated exclude box) and an **Ask** tab for questions such as *"Are we affected by Log4Shell?"*.
 
 **Live scan** (switch under *Run assessment*): keeps watching the logs instead of analysing them once. Every few seconds it reads only the new lines of each log file, re-runs the Log Monitor's rules (no LLM, so it is cheap), and raises an alert the first time each attack appears; the same attack is never alerted twice. It also refreshes the whole dashboard: all five agents run once when Live scan starts (so the Incidents, Log detections, Code & config findings and CVE counters exist straight away) and again on every new alert, at most every 20 seconds. These refreshes are rule-based by default (seconds, no model calls; tick *Use the LLM* for LLM-written text) and each is saved to Scan history. The live panel shows the same counters as the Overview tab. Three ways to feed it:
 
@@ -116,6 +116,7 @@ secagents/
   graph.py       LangGraph supervisor
   llm.py         Claude / OpenAI / OpenRouter router
   repo_scan.py   Folder scan: ignore rules, exclusions, staging
+  sources.py     Local / network share / GitHub / Google Drive sources, safe download and unpacking
   live.py        Live scan: log tailer, alert de-duplication, demo replay, live_logs/ helpers
   report.py      Markdown report
   exporters.py   Word / Excel / PDF exports of the same report data
@@ -229,7 +230,22 @@ Cyber content can trip provider classifiers. Claude calls use server-side refusa
 `streamlit run app/streamlit_app.py` for the dashboard, `python -m secagents --json results.json` for the CLI, which writes `security_report.md`. Restart Streamlit after pulling code changes, because it keeps imported modules in memory.
 
 **How do I scan my own system?**
-Pick **Upload my own files** and upload logs, code, `requirements.txt`, a Dockerfile and a config, or use **Scan a whole folder**: type a path or press **Browse...**. The folder scan finds logs, Python code, requirements, a Dockerfile and a config automatically.
+Pick **Upload my own files** and upload logs, code, `requirements.txt`, a Dockerfile and a config, or use **Scan a whole folder or repository**: type a path or link (see below) or press **Browse...**. The scan finds logs, Python code, requirements, a Dockerfile and a config automatically.
+
+**Which folders and links can I scan?**
+Type any of these in **Repository folder path or link**:
+
+| You type | What happens |
+|---|---|
+| `C:\projects\my-app` | A folder on the machine running the dashboard. |
+| `\\server\share\folder` | A Windows network share, read in place. The dashboard must run on Windows; on Linux or macOS mount the share and enter the mount point. An unreachable share gives an error after 8 seconds instead of freezing the page. |
+| `https://github.com/owner/repo` or `.../tree/<branch>/<folder>` | The repository (or just that folder) is downloaded as a zip. Public repos need nothing; for a private repo a **GitHub token** box appears (or set `GITHUB_TOKEN` on the server). |
+| `https://drive.google.com/drive/folders/<id>` | A public Google Drive folder (shared as *Anyone with the link*). Only the files the scanners read are fetched (code, config, logs, requirements, Dockerfiles, ignore files), skipping anything your `.gitignore` excludes. |
+
+Downloads are cached for 15 minutes, so changing a setting does not download again. A GitHub or Drive scan is a **snapshot**: Live scan can analyse it once but cannot watch it grow, so for live monitoring use a local folder or a network share. Private Drive folders are not supported (Google needs a login), and Google may throttle repeated downloads of the same folder. The first Drive fetch of a folder with around 100 files takes about a minute.
+
+**Is it safe to point the scanner at a link I do not control?**
+Downloaded content is treated as untrusted. Archives are unpacked with checks that block `..` and absolute paths, symlinks are skipped, and limits apply (150 MB download, 400 MB unpacked, 20,000 files; 300 files and 100 MB from Drive). Only GitHub and Google hosts are contacted, redirects away from GitHub are refused, and a GitHub token is only ever sent to `api.github.com`. Nothing from the source is executed; it is only read and scanned.
 
 **What does the folder scan skip?**
 `.git`, plus everything in the folder's `.gitignore` and `.ignore`. Those entries are pre-filled into the **Exclude folders** box (the label says so) whenever you pick a folder, so you can see exactly what is skipped. Add your own comma-separated names, relative paths or wildcards (for example `tests, docs, build`), or delete an entry to scan it after all. If the folder has no ignore file, add `.venv` and `node_modules` yourself.

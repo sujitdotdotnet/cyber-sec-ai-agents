@@ -31,6 +31,7 @@ from secagents.llm import get_router  # noqa: E402
 from secagents.qa import ask  # noqa: E402
 from secagents.rag import embedding_backend, set_embedding_key  # noqa: E402
 from secagents.repo_scan import browse_folder, collect_repo_inputs, find_logs, ignore_entries  # noqa: E402
+from secagents.sources import SourceError, classify as classify_source, resolve as resolve_source  # noqa: E402
 
 st.set_page_config(page_title="Cyber Security AI Agent", page_icon="🛡️", layout="wide")
 
@@ -72,6 +73,10 @@ APP_CSS = """
 .sa-dot{display:inline-block;width:12px;height:12px;border-radius:50%;background:#d64545;margin-right:8px;vertical-align:middle}
 .sa-dot.on{background:#2ecc71;animation:sa-greenpulse 1.2s ease-in-out infinite}
 .sa-tagline{font-size:1.35rem;font-weight:600;letter-spacing:.2px;line-height:1.35;margin:-.25rem 0 .75rem}
+/* fade in and out (1.6 s per cycle) for the call-to-action; off for people who prefer reduced motion */
+.sa-pulse-text{animation:sa-textpulse 1.6s ease-in-out infinite}
+@keyframes sa-textpulse{0%,100%{opacity:1}50%{opacity:.3}}
+@media (prefers-reduced-motion: reduce){.sa-pulse-text{animation:none}}
 .sa-live{display:inline-flex;align-items:center;font-weight:700;color:#2ecc71;margin-bottom:6px}
 @keyframes sa-greenpulse{0%,100%{box-shadow:0 0 0 0 rgba(46,204,113,.65)}50%{box-shadow:0 0 0 8px rgba(46,204,113,0)}}
 </style>
@@ -84,6 +89,14 @@ def tagline_color() -> str:
         return "#0f8a43" if st.context.theme.type == "light" else "#3ddc84"
     except Exception:  # noqa: BLE001 - theme unknown (older Streamlit / embedded): the bright green suits the default dark theme
         return "#3ddc84"
+
+
+def cta_color() -> str:
+    """Orange for the pulsing call to action: bright on a dark page, deeper on a light one (same idea as the tagline)."""
+    try:
+        return "#d9480f" if st.context.theme.type == "light" else "#ff9f43"
+    except Exception:  # noqa: BLE001 - theme unknown: the bright orange suits the default dark theme
+        return "#ff9f43"
 
 
 def scan_status_html(scanning: bool, detail: str) -> str:
@@ -183,7 +196,7 @@ with st.sidebar:
     st.title("🛡️ Cyber Security AI Agent")
     st.button("↺ Reset", on_click=reset_app, use_container_width=True,
               help="Clear the current results, chat and inputs. Scan history is kept.")
-    st.caption("Five AI agents for detection, intel, scanning, response and compliance.")
+    st.caption("Five AI agents for detection, intel, scanning, response and compliance. Scan your GitHub Repositories, own logs, code and config files now.")
     router = get_router()
     options = list(settings.provider_order)
     router.preferred = st.selectbox(
@@ -214,7 +227,8 @@ with st.sidebar:
 
     source = st.radio("Data to analyze", ["Demo attack scenario", "Upload my own files"], key=f"source-{nonce}")
     inputs = default_inputs()
-    repo_folder = repo_excludes = ""
+    repo_folder = repo_excludes = repo_path = ""  # repo_folder: what was typed; repo_path: the local folder it resolves to
+    repo_info = None
     if source == "Upload my own files":
         tmp = Path(tempfile.mkdtemp(prefix="secagents_"))
         logs = st.file_uploader("Log files (auth.log, access.log, firewall.log)", accept_multiple_files=True, key=f"logs-{nonce}")
@@ -231,23 +245,52 @@ with st.sidebar:
             "config_path": save_uploads([cfg], tmp)[0] if cfg else "",
         }
         save_uploads(code, tmp / "code")
-        st.markdown("**Or scan a whole folder (Works Locally only)**")
+        st.markdown("**Or scan a whole folder or repository**")
         repo_key = f"repo-{nonce}"
         repo_folder = st.text_input(
-            "Repository folder path (Works Locally only)", key=repo_key, placeholder=r"e.g. C:\projects\my-app",
-            help="Type a path or use Browse. The folder is on the machine running this app. Logs, Python code, "
-                 "requirements, Dockerfile and config are found automatically. Files matched by the folder's "
-                 ".gitignore / .ignore are skipped.",
+            "Repository folder path or link", key=repo_key,
+            placeholder=r"C:\code\app · \\server\share\app · https://github.com/owner/repo · Drive folder link",
+            help=r"Any of: a folder on the machine running this app (Browse works locally only); a Windows network share "
+                 r"(\\server\share\folder); a GitHub repository or folder link (https://github.com/owner/repo or "
+                 ".../tree/<branch>/<folder>); a public Google Drive folder link (shared as 'Anyone with the link'). "
+                 "Links are downloaded. Logs, Python code, requirements, Dockerfile and config are found automatically; "
+                 "files matched by the .gitignore / .ignore are skipped.",
         )
+        source_kind = ""
+        if repo_folder.strip():
+            try:
+                source_kind = classify_source(repo_folder)
+            except SourceError as exc:
+                st.error(str(exc))
+        gh_token = ""
+        if source_kind == "github":
+            gh_token = st.text_input("GitHub token (private repositories only)", type="password", key=f"ghtoken-{nonce}",
+                                     placeholder="Optional. Or set GITHUB_TOKEN on the server",
+                                     help="Only sent to api.github.com, kept in this session, never saved.")
         st.button("📂 Browse...(Works Locally only)", key=f"browse-{nonce}", on_click=pick_folder, args=(repo_key,),
                   use_container_width=True, help="Open a folder chooser on this machine")
         if st.session_state.pop("browse_failed", False):
             st.warning("Couldn't open a folder dialog here (no display?). Type the path instead.")
-        # pre-fill with the folder's .gitignore / .ignore entries whenever the folder changes
+        if source_kind:  # turn the path / link into a local folder (downloads are cached for a few minutes)
+            wait = {"github": "Downloading from GitHub...",
+                    "gdrive": "Fetching the Google Drive folder (the first fetch can take a minute)...",
+                    "network": "Reaching the network share...", "local": "Reading the folder..."}[source_kind]
+            try:
+                with st.spinner(wait):
+                    repo_info = resolve_source(repo_folder, gh_token)
+                repo_path = str(repo_info.path)
+                st.caption(f"✅ {repo_info.label}")
+                if repo_info.note:
+                    st.caption(repo_info.note)
+            except SourceError as exc:
+                st.error(str(exc))
+        st.session_state["repo_remote"] = bool(repo_info and repo_info.remote)
+        # pre-fill with the folder's .gitignore / .ignore entries when the source changes or first resolves
         exclude_key = f"exclude-{nonce}"
-        if st.session_state.get(f"prefilled-{nonce}") != repo_folder:
-            st.session_state[f"prefilled-{nonce}"] = repo_folder
-            st.session_state[exclude_key] = ", ".join(ignore_entries(repo_folder)) if repo_folder.strip() else ""
+        fingerprint = (repo_folder.strip(), bool(repo_path))
+        if st.session_state.get(f"prefilled-{nonce}") != fingerprint:
+            st.session_state[f"prefilled-{nonce}"] = fingerprint
+            st.session_state[exclude_key] = ", ".join(ignore_entries(repo_path)) if repo_path else ""
         repo_excludes = st.text_area(
             "Exclude folders (comma-separated) · .gitignore / .ignore items are excluded by default",
             key=exclude_key, height=110, placeholder="e.g. tests, docs, build",
@@ -283,7 +326,7 @@ with st.sidebar:
                                    key=f"live-llm-{nonce}", disabled=not live_auto,
                                    help="Off: the agents use their rule-based output, so counters update in seconds with "
                                         "no model calls. Press Run assessment for a full LLM-written report.")
-        if not sim_on and not repo_folder.strip():
+        if not sim_on and not repo_path:
             # default target: a writable folder the tailer follows, so attacks can be pasted in
             with st.expander("🧪 Test it: paste log lines", expanded=True):
                 st.caption(f"Live scan is following `{settings.live_dir}`. Paste attack lines (examples in "
@@ -323,7 +366,8 @@ with st.sidebar:
 st.title("🛡️ Cyber Security AI Agent")
 st.markdown(
     f'<div class="sa-tagline" style="color:{tagline_color()}">Five AI agents for detection, intel, scanning, '
-    "response and compliance.</div>",
+    f"response and compliance. <span class='sa-pulse-text' style='color:{cta_color()}'>"
+    "(Scan your GitHub Repositories, own logs, code and config files now)</span></div>",
     unsafe_allow_html=True,
 )
 if scanning:
@@ -386,15 +430,18 @@ def run_assessment(inputs: dict, name: str, source_label: str, use_llm: bool = T
 
 
 if run:
-    if live_on and not sim_on and not repo_folder.strip():
+    if repo_folder.strip() and not repo_path:
+        st.error("The folder path or link in the sidebar could not be opened. Fix it, or clear it to scan the other inputs.")
+        st.stop()
+    if live_on and not sim_on and not repo_path:
         inputs = {**inputs, "log_paths": live_log_paths()}  # analyse what Live scan is following, not the demo logs
-    if repo_folder.strip():
+    if repo_path:
         try:
-            inputs, found = with_repo(inputs, repo_folder, repo_excludes)
+            inputs, found = with_repo(inputs, repo_path, repo_excludes)
         except OSError as exc:
             st.error(str(exc))
             st.stop()
-        st.info(f"📁 Scanning `{repo_folder.strip()}`: {found['logs']} log file(s), {found['python']} Python file(s), "
+        st.info(f"📁 Scanning {repo_info.label}: {found['logs']} log file(s), {found['python']} Python file(s), "
                 f"{found['requirements']} requirements, {found['dockerfiles']} Dockerfile(s), {found['configs']} config file(s).")
     run_assessment(inputs, scan_name, source)
     st.rerun()  # refresh the sidebar history with the new scan
@@ -455,6 +502,9 @@ def live_panel(mode: str, folder: str, excludes: str, base_inputs: dict, source_
             st.progress(feed.progress, text="Simulation: replaying the demo logs" + (" (finished)" if feed.done else ""))
         elif mode == "files":
             st.caption(f"Following `{settings.live_dir}`. Paste attack lines in the sidebar's **Test it** box.")
+        elif st.session_state.get("repo_remote"):
+            st.caption("This is a downloaded snapshot, so it does not change and Live scan only shows what it already holds. "
+                       "To monitor logs as they grow, use a local folder or a network share.")
         else:
             st.caption(f"Following the log files in `{folder.strip()}`.")
         per_file = " · ".join(f"{n} {c}" for n, c in tailer.read_by_file.items()) or "no lines yet"
@@ -498,9 +548,9 @@ def live_panel(mode: str, folder: str, excludes: str, base_inputs: dict, source_
 
 if live_on:
     # simulation replays the demo logs; else follow a folder's real logs; else follow live_logs/ (paste target)
-    live_mode = "demo" if sim_on else "folder" if repo_folder.strip() else "files"
+    live_mode = "demo" if sim_on else "folder" if repo_path else "files"
     st.fragment(run_every=live_interval)(live_panel)(
-        live_mode, repo_folder, repo_excludes, inputs, source, live_interval, live_auto, live_llm)
+        live_mode, repo_path, repo_excludes, inputs, source, live_interval, live_auto, live_llm)
 
 result = st.session_state.get("result")
 if not result:
