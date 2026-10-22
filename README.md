@@ -78,7 +78,7 @@ cp .env.example .env        # add ANTHROPIC_API_KEY / OPENAI_API_KEY / OPENROUTE
 
 streamlit run app/streamlit_app.py     # dashboard
 python -m secagents --json results.json  # CLI: writes security_report.md (add --docx r.docx --xlsx r.xlsx --pdf r.pdf)
-pytest                                  # 148 tests, no API keys needed
+pytest                                  # 218 tests, no API keys needed
 ```
 
 The CLI accepts your own data: `python -m secagents --logs /var/log/auth.log access.log --code ./src --requirements requirements.txt --dockerfile Dockerfile --config my_config.yaml`.
@@ -95,6 +95,46 @@ Existing log content is treated as the baseline, so switch Live scan on first; o
 **Scan status at a glance:** a banner tops the dashboard. It is a calm still image (agents, shield and green code lines) when idle and an animated GIF (radar sweep, data packets flowing from the agents into the shield, and a green scan bar moving top to bottom that lights up the green code lines behind it) while a scan is running: *Run assessment*, Live scan, or Simulation. Beside the **Live scan** switch, a status dot is **red and still** when idle and **green and pulsing** while scanning. Regenerate the artwork with `python scripts/make_banner.py`.
 
 Every assessment is saved to `.history/` (set `HISTORY_DIR` to move it) and listed under **Scan history** in the sidebar, using the name you give it or an automatic one (source, time, risk). Click a scan to reopen it. **Reset**, under the title, clears the current results, chat and inputs; saved history is kept.
+
+## The Agent tab: tools, memory, orchestration, MCP
+
+The **🤖 Agent** tab is a chat with one agent that decides for itself which tools to call (it works before you run an assessment). It needs a model with tool calling: OpenRouter, Claude or OpenAI, through the same router and fallback order as the rest of the app.
+
+```mermaid
+flowchart LR
+    U[You] --> UI[Streamlit Agent tab]
+    UI --> G{{LangGraph loop<br/>model ⇄ tools}}
+    G -->|tool schemas| R[[Model router<br/>OpenRouter → Claude → OpenAI]]
+    G -->|read-only tools| T[(Tool registry)]
+    G -->|write tools| H{Human approval<br/>interrupt}
+    H --> T
+    T --> KB[(Knowledge base)]
+    T --> A[Latest assessment]
+    T --> LG[Log detectors]
+    T -. optional .-> M[MCP server<br/>stdio subprocess]
+    G <--> MEM[(SQLite memory<br/>chats + facts)]
+```
+
+- **Tools** (`secagents/tools.py`): `search_knowledge`, `lookup_record`, `analyze_log_text`, `get_assessment_summary`, `get_findings`, `get_incident_steps`, `recall_memory` run freely. `run_assessment`, `add_live_log_lines`, `remember` and `forget_memory` pause for your **Approve / Deny** click. Arguments are validated, results capped, and a failing tool returns its error as text instead of crashing the loop.
+- **Orchestration** (`secagents/agent.py`): a LangGraph model → tools → model loop with a checkpointer, `interrupt()` for approvals, and limits per question (`AGENT_MAX_STEPS`, `AGENT_TURN_TOKENS`). Tool output and pasted logs are treated as data: the system prompt tells the model never to follow instructions found in them. Failover keeps the whole conversation, so if one provider fails mid-chat the next picks up the same tool history.
+- **Memory** (`secagents/memory.py`): chats are saved per thread in SQLite (`MEMORY_DB`, default `.memory/memory.db`) and can be reopened from the *Conversation* menu. Long-term facts are recalled by meaning (local embeddings plus keyword overlap, no API call) and added to the prompt; the agent asks before saving one, secrets are never stored, and every record is scoped to a workspace. **Export / import** (JSON) is in the *🧠 Memory* panel because free hosting has a temporary disk.
+- **MCP** (`secagents/mcp_server.py`, `mcp_client.py`): the read-only tools, a `knowledge://{kind}/{id}` resource and a `triage_logs` prompt are also an MCP server. Use it from Claude Desktop or Cursor:
+
+  ```json
+  { "mcpServers": { "secagents": { "command": "python", "args": ["-m", "secagents.mcp_server"], "cwd": "/path/to/this/repo" } } }
+  ```
+
+  (`--http --port 8765` serves streamable HTTP at `/mcp` instead.) In the other direction, ticking **Route tool calls through MCP** in *⚙ Agent settings* makes the agent call those tools through a real MCP connection, and `mcp_servers.json` lists extra servers it can use (Claude Desktop format; start a name with `_` to disable it; ignored on a public deployment).
+- **An assessment the agent runs** becomes the dashboard's current result and is saved to Scan history.
+
+## Deploy to the public cloud (Streamlit Community Cloud)
+
+1. Push the repo to GitHub, then on [share.streamlit.io](https://share.streamlit.io) create an app with main file `app/streamlit_app.py`.
+2. In **App settings → Secrets** paste the contents of [`.streamlit/secrets.toml.example`](.streamlit/secrets.toml.example) with your key. Top-level keys become environment variables.
+3. With `SECAGENTS_PUBLIC="1"` the app is safe to share: every visitor gets their own router and typed keys, live-log folder, scan history and memory workspace (all visitors share one Python process, so this isolation is what keeps keys apart); server folders, network shares and **Browse** are disabled (GitHub / Drive links and uploads still work); *approve automatically* is hidden; extra MCP servers are ignored; and your key is metered, `SESSION_TOKEN_CAP` per visitor and `DAILY_TOKEN_CAP` for everyone. A visitor who pastes their own key is not metered and costs you nothing. When the allowance is gone the agents fall back to rule-based mode.
+4. The disk is temporary and the app sleeps after inactivity: scan history, memory and the Chroma index are rebuilt or lost on restart, which is why memory has export / import. A *workspace code* in the Agent tab lets a visitor find their saved chats again; it is a shared secret, not a login.
+
+**Docker** (any host): `docker build -t secagents .` then `docker run -p 8501:8501 --env-file .env secagents` (add `-e SECAGENTS_PUBLIC=1` for a shared deployment). CI (`.github/workflows/ci.yml`) runs the tests and builds this image on every push.
 
 ## The demo scenario
 
@@ -122,11 +162,18 @@ secagents/
   report.py      Markdown report
   exporters.py   Word / Excel / PDF exports of the same report data
   qa.py          Ask-the-agents Q&A
+  tools.py       Tool registry for the agent (schemas, validation, approval flags)
+  agent.py       LangGraph tool-calling loop with human approval and budgets
+  agent_ui.py    The Agent tab
+  memory.py      SQLite chats + long-term facts, redaction, export / import
+  mcp_server.py  MCP server (stdio / streamable HTTP);  mcp_client.py  MCP client hub
+  session.py     Per-visitor router, folders and token budget for public deployments
 knowledge/       cves.jsonl, attack.jsonl, controls.jsonl, threat_feed.json
 samples/         demo logs, vulnerable app, system config, live_examples/ (paste-in attack lines)
 app/             Streamlit dashboard (assets/: banner still PNG and scanning GIF)
 scripts/         make_banner.py regenerates the banner images
 tests/
+Dockerfile, .github/workflows/ci.yml, .streamlit/, mcp_servers.json   deployment and MCP config
 ```
 
 ## Extending
@@ -164,6 +211,12 @@ Requirement: *an AI-powered cybersecurity system made of multiple agents that mo
 | 12 | Real-time threat detection, analysis and response | ✅ | **Live scan** switch next to *Run assessment*: follows the log files as they grow, alerts the first time each attack appears and refreshes the full agent pipeline and dashboard counters on new alerts (`live.py`). It runs while the dashboard is open; it is not a background service |
 | 13 | Suggest fixes automatically | ✅ | Code fix suggestions, incident playbook, compliance roadmap, all LLM-written with rule-based fallbacks |
 | 14 | Useful for security engineers, DevOps and IT teams | ✅ | Streamlit dashboard, CLI (`python -m secagents`), report export to Word, Excel, PDF, Markdown and JSON, folder scan, scan history |
+| 15 | Agent with **tools** | ✅ | `tools.py`: 11 tools; the model chooses them through provider-neutral tool calling in the router (`llm.py`) |
+| 16 | Agent **memory** | ✅ | `memory.py`: saved chats plus long-term facts, workspace-scoped, secrets refused, export / import |
+| 17 | Agent **orchestration** | ✅ | `agent.py`: LangGraph loop with approvals (`interrupt`), step and token limits, provider failover mid-conversation |
+| 18 | Agent **interface** | ✅ | 🤖 Agent tab: chat, visible tool calls and results, approve / deny cards, conversation picker, memory panel |
+| 19 | **MCP** | ✅ | `mcp_server.py` (tools, resource, prompt) and `mcp_client.py`; the agent can route calls through it. No public `/mcp` URL on Streamlit Cloud: run the server locally or in Docker |
+| 20 | Deployed on a **public cloud** | 🟡 | Streamlit Community Cloud settings, public-mode hardening and Docker / CI are in the repo; the deployment itself is yours to create and was not exercised from here |
 
 ✅ implemented · 🟡 partly implemented · ❌ not implemented
 

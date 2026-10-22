@@ -43,6 +43,17 @@ class Settings:
     live_dir: Path = field(default_factory=lambda: Path(_env("LIVE_LOGS_DIR", str(ROOT / "live_logs"))))
     history_dir: Path = field(default_factory=lambda: Path(_env("HISTORY_DIR", str(ROOT / ".history"))))
 
+    # Agent: memory file, MCP servers file, per-turn limits.
+    memory_db: Path = field(default_factory=lambda: Path(_env("MEMORY_DB", str(ROOT / ".memory" / "memory.db"))))
+    mcp_config: Path = field(default_factory=lambda: Path(_env("MCP_CONFIG", str(ROOT / "mcp_servers.json"))))
+    agent_max_steps: int = field(default_factory=lambda: int(_env("AGENT_MAX_STEPS", "6") or 6))
+    agent_turn_tokens: int = field(default_factory=lambda: int(_env("AGENT_TURN_TOKENS", "40000") or 40000))
+
+    # Public deployment (Streamlit Community Cloud): no local paths, per-visitor isolation, a daily model-token cap.
+    public: bool = field(default_factory=lambda: _env("SECAGENTS_PUBLIC") in {"1", "true", "yes"})
+    daily_token_cap: int = field(default_factory=lambda: int(_env("DAILY_TOKEN_CAP", "300000") or 300000))
+    session_token_cap: int = field(default_factory=lambda: int(_env("SESSION_TOKEN_CAP", "60000") or 60000))
+
     @property
     def has_any_llm(self) -> bool:
         return not self.offline and any(

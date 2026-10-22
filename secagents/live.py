@@ -22,8 +22,14 @@ from typing import Any
 
 from .agents.log_monitor import BRUTE_FORCE_THRESHOLD, detect_named, line_kind, recognised
 from .config import settings
+from .session import live_override
 
 MAX_BUFFER_LINES = 20_000  # per file; the oldest lines drop off
+
+
+def live_dir() -> Path:
+    """The live-log folder: the visitor's own on a public deployment, else the configured one."""
+    return live_override() or settings.live_dir
 
 
 def event_key(event: dict[str, Any]) -> tuple[str, str, str]:
@@ -161,8 +167,8 @@ LIVE_LOG_FILES = ("auth.log", "nginx_access.log", "firewall.log")  # names the L
 
 def live_log_paths() -> list[str]:
     """The writable folder Live scan follows by default; paste or append attack lines into these files."""
-    settings.live_dir.mkdir(parents=True, exist_ok=True)
-    paths = [settings.live_dir / n for n in LIVE_LOG_FILES]
+    live_dir().mkdir(parents=True, exist_ok=True)
+    paths = [live_dir() / n for n in LIVE_LOG_FILES]
     for p in paths:
         p.touch(exist_ok=True)
     return [str(p) for p in paths]
@@ -223,7 +229,7 @@ def append_log_lines(filename: str, text: str) -> int:
     lines = [ln.rstrip() for ln in text.replace("\r\n", "\n").splitlines() if ln.strip()]
     if lines:
         live_log_paths()
-        with (settings.live_dir / filename).open("a", encoding="utf-8", newline="\n") as f:
+        with (live_dir() / filename).open("a", encoding="utf-8", newline="\n") as f:
             f.write("\n".join(lines) + "\n")
     return len(lines)
 

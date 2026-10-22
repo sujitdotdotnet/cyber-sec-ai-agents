@@ -1,0 +1,16 @@
+.git
+.github
+.venv
+venv
+__pycache__
+*.pyc
+.env
+.chroma
+.history
+.memory
+.sessions
+.pytest_cache
+live_logs
+tests
+security_report.md
+security_results.json

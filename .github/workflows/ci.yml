@@ -1,0 +1,33 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.14"
+          cache: pip
+      - run: pip install -r requirements.txt
+      - name: Tests (rule-based mode, no API keys needed)
+        env:
+          SECAGENTS_OFFLINE: "1"
+        run: pytest -q
+
+  docker:
+    runs-on: ubuntu-latest
+    needs: test
+    steps:
+      - uses: actions/checkout@v4
+      - run: docker build -t secagents .
+      - name: Container starts and answers its health check
+        run: |
+          docker run -d --name sa -p 8501:8501 -e SECAGENTS_OFFLINE=1 -e SECAGENTS_PUBLIC=1 secagents
+          for i in $(seq 1 30); do curl -fs http://127.0.0.1:8501/_stcore/health && exit 0; sleep 2; done
+          docker logs sa; exit 1

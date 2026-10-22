@@ -8,11 +8,16 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from .config import settings
+from .session import history_override
+
+
+def history_dir() -> Path:
+    return history_override() or settings.history_dir
 
 
 def _dir() -> Path:
-    settings.history_dir.mkdir(parents=True, exist_ok=True)
-    return settings.history_dir
+    history_dir().mkdir(parents=True, exist_ok=True)
+    return history_dir()
 
 
 def default_name(source: str, result: dict, when: datetime | None = None) -> str:

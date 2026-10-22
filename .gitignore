@@ -9,3 +9,6 @@ security_report.md
 security_results.json
 .history/
 live_logs/
+.memory/
+.sessions/
+.streamlit/secrets.toml

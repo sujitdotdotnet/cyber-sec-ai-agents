@@ -47,7 +47,7 @@ def _drop_stale_secagents_modules() -> None:
 
 def _import_secagents() -> dict:
     """Every import from the secagents package, together, so they can be retried as one unit."""
-    from secagents import history
+    from secagents import agent_ui, history
     from secagents.config import settings
     from secagents.exporters import MIME as EXPORT_MIME, export
     from secagents.graph import default_inputs, stream
@@ -56,10 +56,11 @@ def _import_secagents() -> dict:
         ALL_EXAMPLES, EXAMPLE_FILES, FORMAT_EXAMPLES, KIND_FILE, LIVE_LOG_FILES, LogTailer, ReplayFeed, append_log_lines,
         append_routed, clear_live_logs, event_key, example_text, live_log_paths, repair_live_logs, route_lines, to_alert,
     )
-    from secagents.llm import get_router
+    from secagents.llm import LLMRouter, get_router
     from secagents.qa import ask
     from secagents.rag import embedding_backend, set_embedding_key
     from secagents.repo_scan import browse_folder, collect_repo_inputs, find_logs, ignore_entries
+    from secagents.session import activate as activate_session, live_dir as current_live_dir, new_session
     from secagents.sources import SourceError, classify as classify_source, resolve as resolve_source
 
     return dict(locals())
@@ -76,6 +77,13 @@ except ImportError:
     globals().update(_import_secagents())
 
 st.set_page_config(page_title="Cyber Security AI Agent", page_icon="🛡️", layout="wide")
+
+# Public deployment: every visitor gets their own router (typed API keys), live-log folder, scan history and budget,
+# because all visitors share one Python process. Locally nothing changes: one shared router and the configured folders.
+if settings.public:
+    if "visitor" not in st.session_state:
+        st.session_state["visitor"] = new_session(LLMRouter())
+    activate_session(st.session_state["visitor"])
 
 
 class _IgnoreBrowserDisconnect(logging.Filter):
@@ -350,7 +358,8 @@ with st.sidebar:
         source_note = {"typed": "🔑 using the key you entered", ".env": "using the key from .env"}[router.key_source(chosen)] \
             if router.key_source(chosen) != "none" else "rule-based mode (offline)"
         st.caption(f"{chosen}: {source_note}")
-    set_embedding_key(router.key_overrides.get("openai", ""))  # an OpenAI key typed here also drives RAG embeddings
+    if not settings.public:  # the knowledge base is shared by every visitor, so a visitor's key must not drive it
+        set_embedding_key(router.key_overrides.get("openai", ""))  # an OpenAI key typed here also drives RAG embeddings
     providers = router.available_providers()
     st.markdown("**Active providers:** " + (", ".join(providers) if providers else "none (rule-based mode)"))
     st.caption(f"Model: `{router.model_for(router.preferred)}` ({router.preferred})")
@@ -394,13 +403,18 @@ with st.sidebar:
                 source_kind = classify_source(repo_folder)
             except SourceError as exc:
                 st.error(str(exc))
+            if settings.public and source_kind in ("local", "network"):
+                st.error("Folders on the server and network shares are disabled on this public site. "
+                         "Use a GitHub or Google Drive link, or upload files.")
+                source_kind = ""
         gh_token = ""
         if source_kind == "github":
             gh_token = st.text_input("GitHub token (private repositories only)", type="password", key=f"ghtoken-{nonce}",
                                      placeholder="Optional. Or set GITHUB_TOKEN on the server",
                                      help="Only sent to api.github.com, kept in this session, never saved.")
-        st.button("📂 Browse...(Works Locally only)", key=f"browse-{nonce}", on_click=pick_folder, args=(repo_key,),
-                  use_container_width=True, help="Open a folder chooser on this machine")
+        if not settings.public:
+            st.button("📂 Browse...(Works Locally only)", key=f"browse-{nonce}", on_click=pick_folder, args=(repo_key,),
+                      use_container_width=True, help="Open a folder chooser on this machine")
         if st.session_state.pop("browse_failed", False):
             st.warning("Couldn't open a folder dialog here (no display?). Type the path instead.")
         if source_kind:  # turn the path / link into a local folder (downloads are cached for a few minutes)
@@ -465,7 +479,7 @@ with st.sidebar:
         if not sim_on and not repo_path:
             # default target: a writable folder the tailer follows, so attacks can be pasted in
             with st.expander("🧪 Test it: paste log lines", expanded=True):
-                st.caption(f"Live scan is following `{settings.live_dir}`. Add a ready-made attack in one click, or paste "
+                st.caption(f"Live scan is following `{current_live_dir()}`. Add a ready-made attack in one click, or paste "
                            "your own log lines below.")
                 example_key = f"example-{nonce}"
                 st.selectbox("Add a ready-made attack", [ALL_EXAMPLES, *EXAMPLE_FILES], key=example_key,
@@ -657,7 +671,7 @@ def live_panel(mode: str, folder: str, excludes: str, base_inputs: dict, source_
         if feed:
             st.progress(feed.progress, text="Simulation: replaying the demo logs" + (" (finished)" if feed.done else ""))
         elif mode == "files":
-            st.caption(f"Following `{settings.live_dir}`. Paste attack lines in the sidebar's **Test it** box.")
+            st.caption(f"Following `{current_live_dir()}`. Paste attack lines in the sidebar's **Test it** box.")
         elif st.session_state.get("repo_remote"):
             st.caption("This is a downloaded snapshot, so it does not change and Live scan only shows what it already holds. "
                        "To monitor logs as they grow, use a local folder or a network share.")
@@ -738,17 +752,21 @@ if live_on:
 
 result = st.session_state.get("result")
 if not result:
-    st.header("AI-powered security operations")
-    st.markdown(
-        "Press **Run assessment** to have the agents analyze the demo environment: a web server that was "
-        "scanned, probed with SQL injection and Log4Shell, brute-forced over SSH and backdoored.\n\n"
-        "| Agent | Job |\n|---|---|\n"
-        "| 📜 Log Monitor | Detects attacks and anomalies in auth, web and firewall logs |\n"
-        "| 🔍 Vulnerability Scanner | Scans code (Bandit), secrets, Dockerfile and dependencies |\n"
-        "| 🌐 Threat Intelligence | Matches CVEs, IOCs and ATT&CK via agentic RAG; answers *are we affected?* |\n"
-        "| 🚨 Incident Response | Declares incidents and writes a NIST 800-61 playbook |\n"
-        "| 📋 Policy Checker | Scores NIST 800-53, NIST CSF 2.0, ISO 27001 and SOC 2 |"
-    )
+    welcome, agent_tab = st.tabs(["Welcome", "🤖 Agent"])  # the agent works before any assessment: knowledge, log analysis
+    with welcome:
+        st.header("AI-powered security operations")
+        st.markdown(
+            "Press **Run assessment** to have the agents analyze the demo environment: a web server that was "
+            "scanned, probed with SQL injection and Log4Shell, brute-forced over SSH and backdoored.\n\n"
+            "| Agent | Job |\n|---|---|\n"
+            "| 📜 Log Monitor | Detects attacks and anomalies in auth, web and firewall logs |\n"
+            "| 🔍 Vulnerability Scanner | Scans code (Bandit), secrets, Dockerfile and dependencies |\n"
+            "| 🌐 Threat Intelligence | Matches CVEs, IOCs and ATT&CK via agentic RAG; answers *are we affected?* |\n"
+            "| 🚨 Incident Response | Declares incidents and writes a NIST 800-61 playbook |\n"
+            "| 📋 Policy Checker | Scores NIST 800-53, NIST CSF 2.0, ISO 27001 and SOC 2 |"
+        )
+    with agent_tab:
+        agent_ui.render({}, nonce)
     st.stop()
 
 scan = st.session_state.get("scan")
@@ -758,7 +776,7 @@ if scan:
 logs, vulns = result.get("log_findings", {}), result.get("vuln_findings", {})
 intel, ir, comp = result.get("threat_intel", {}), result.get("incident_plan", {}), result.get("compliance", {})
 
-tabs = st.tabs(["Overview", "📜 Logs", "🌐 Threat Intel", "🔍 Vulnerabilities", "🚨 Response", "📋 Compliance", "💬 Ask", "📝 Report"])
+tabs = st.tabs(["Overview", "📜 Logs", "🌐 Threat Intel", "🔍 Vulnerabilities", "🚨 Response", "📋 Compliance", "💬 Ask", "📝 Report", "🤖 Agent"])
 
 with tabs[0]:
     c = st.columns([1.5, 1, 1, 1.2, 1.2])
@@ -883,3 +901,6 @@ with tabs[7]:
     cols[4].download_button("⬇ JSON", json.dumps(result, indent=2, default=str), "security_results.json",
                             on_click="ignore", use_container_width=True)
     st.markdown(report)
+
+with tabs[8]:
+    agent_ui.render(result, nonce)
