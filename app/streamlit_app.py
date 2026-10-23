@@ -378,22 +378,7 @@ with st.sidebar:
     repo_folder = repo_excludes = repo_path = ""  # repo_folder: what was typed; repo_path: the local folder it resolves to
     repo_info = None
     if source == "Upload my own files":
-        tmp = Path(tempfile.mkdtemp(prefix="secagents_"))
-        logs = st.file_uploader("Log files (auth.log, access.log, firewall.log)", accept_multiple_files=True, key=f"logs-{nonce}")
-        code = st.file_uploader("Python source files", type=["py"], accept_multiple_files=True, key=f"code-{nonce}")
-        reqs = st.file_uploader("requirements.txt", type=["txt"], key=f"reqs-{nonce}")
-        docker = st.file_uploader("Dockerfile", key=f"docker-{nonce}")
-        cfg = st.file_uploader("System config (YAML)", type=["yaml", "yml"], key=f"cfg-{nonce}")
-        (tmp / "code").mkdir()
-        inputs = {
-            "log_paths": save_uploads(logs, tmp),
-            "code_path": str(tmp / "code") if code else "",
-            "requirements_path": save_uploads([reqs], tmp)[0] if reqs else "",
-            "dockerfile_path": save_uploads([docker], tmp)[0] if docker else "",
-            "config_path": save_uploads([cfg], tmp)[0] if cfg else "",
-        }
-        save_uploads(code, tmp / "code")
-        st.markdown("**Or scan a whole folder or repository**")
+        st.markdown("**Scan a whole folder or repository**")
         repo_key = f"repo-{nonce}"
         repo_folder = st.text_input(
             "Repository folder path or link", key=repo_key,
@@ -454,6 +439,22 @@ with st.sidebar:
             help="Pre-filled from the folder's .gitignore and .ignore files, so everything listed is skipped. "
                  "Add your own folders (names, relative paths or wildcards) or remove entries to scan them.",
         )
+        st.markdown("**Or upload individual files**")
+        tmp = Path(tempfile.mkdtemp(prefix="secagents_"))
+        logs = st.file_uploader("Log files (auth.log, access.log, firewall.log)", accept_multiple_files=True, key=f"logs-{nonce}")
+        code = st.file_uploader("Python source files", type=["py"], accept_multiple_files=True, key=f"code-{nonce}")
+        reqs = st.file_uploader("requirements.txt", type=["txt"], key=f"reqs-{nonce}")
+        docker = st.file_uploader("Dockerfile", key=f"docker-{nonce}")
+        cfg = st.file_uploader("System config (YAML)", type=["yaml", "yml"], key=f"cfg-{nonce}")
+        (tmp / "code").mkdir()
+        inputs = {
+            "log_paths": save_uploads(logs, tmp),
+            "code_path": str(tmp / "code") if code else "",
+            "requirements_path": save_uploads([reqs], tmp)[0] if reqs else "",
+            "dockerfile_path": save_uploads([docker], tmp)[0] if docker else "",
+            "config_path": save_uploads([cfg], tmp)[0] if cfg else "",
+        }
+        save_uploads(code, tmp / "code")
     scan_name = st.text_input("Scan name (optional)", key=f"name-{nonce}",
                               placeholder="e.g. Prod web server, weekly check")
     run = st.button("▶ Run assessment", type="primary", use_container_width=True)
