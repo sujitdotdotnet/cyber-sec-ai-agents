@@ -166,6 +166,25 @@ def test_public_site_asks_for_guest_or_sign_in_before_anything_else(model, monke
     assert any("Sign-in is not set up" in i.value for i in at.info)  # no [auth] secrets: guest only, and it says so
 
 
+def test_the_front_door_says_bring_your_own_key_on_both_sides_and_quotes_no_limits(model):
+    body = texts(public_start())
+    assert body.count("🔑 Bring Your Own Key (BYOK)") == 2
+    assert "tokens a session" not in body and "tokens a day" not in body and "lifts the limit" not in body
+
+
+def test_the_sign_in_buttons_are_green_on_the_front_door_and_in_the_guest_sidebar(model, monkeypatch):
+    from secagents import gate
+
+    monkeypatch.setattr(gate, "auth_configured", lambda: True)
+    front = public_start()
+    css = " ".join(m.value for m in front.markdown if "<style>" in m.value)
+    assert ".st-key-gate-signin button" in css and gate.SIGNIN_GREEN in css
+    front.button(key="gate-guest").click().run()
+    assert front.button(key="side-signin")  # "Sign in for more"
+    side_css = " ".join(m.value for m in front.markdown if "st-key-side-signin button" in m.value)
+    assert gate.SIGNIN_GREEN in side_css
+
+
 def test_sign_in_button_appears_once_login_is_configured(model, monkeypatch):
     from secagents import gate
 

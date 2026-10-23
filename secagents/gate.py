@@ -62,6 +62,17 @@ def _guest() -> None:
     st.session_state["guest_ok"] = True
 
 
+SIGNIN_GREEN = "#1f9d55"
+SIGNIN_CSS = (
+    "<style>"
+    ".st-key-gate-signin button, .st-key-side-signin button{"
+    f"background-color:{SIGNIN_GREEN} !important;border-color:{SIGNIN_GREEN} !important;color:#fff !important}}"
+    ".st-key-gate-signin button:hover, .st-key-side-signin button:hover{"
+    "background-color:#17804a !important;border-color:#17804a !important;color:#fff !important}"
+    "</style>"
+)
+
+
 def footer() -> None:
     """The bottom of every page: a collapsed About panel, then the app's name and version."""
     with st.expander(ABOUT_TITLE, expanded=False):
@@ -86,21 +97,22 @@ def resolve() -> ident.Identity:
             ss["guest_identity"] = ident.guest(client=client_hash())
         return ss["guest_identity"]
 
+    st.markdown(SIGNIN_CSS, unsafe_allow_html=True)
     st.title(f"🛡️ {app_title()}")
     st.caption("Five AI agents for detection, intel, scanning, response and compliance, plus a tool-using assistant.")
     left, right = st.columns(2)
     with left, st.container(border=True):
         st.subheader("Sign in")
-        st.markdown(f"Your chats, memory and scan history are saved to your account, with a bigger daily allowance "
-                    f"({settings.user_daily_token_cap:,} tokens a day on the shared key).")
+        st.markdown("Your chats, memory and scan history are saved to your account.")
+        st.markdown("🔑 Bring Your Own Key (BYOK)")
         if auth_configured():
             st.button("Sign in", type="primary", on_click=_sign_in, key="gate-signin", use_container_width=True)
         else:
             st.info("Sign-in is not set up on this site yet. Continue as a guest.")
     with right, st.container(border=True):
         st.subheader("Continue as guest")
-        st.markdown(f"No account needed. Nothing is saved after you leave (you can export your chat), and the shared key "
-                    f"allows {settings.session_token_cap:,} tokens a session. Pasting your own API key lifts the limit.")
+        st.markdown("No account needed. Nothing is saved after you leave (you can export your chat).")
+        st.markdown("🔑 Bring Your Own Key (BYOK)")
         st.button("Continue as guest", on_click=_guest, key="gate-guest", use_container_width=True)
     footer()
     st.stop()
@@ -113,6 +125,7 @@ def sidebar_box(visitor) -> None:
         if who.is_guest:
             st.markdown("👤 **Guest** · limited, nothing is saved")
             if auth_configured():
+                st.markdown(SIGNIN_CSS, unsafe_allow_html=True)
                 st.button("Sign in for more", on_click=_sign_in, key="side-signin", use_container_width=True)
         else:
             st.markdown(f"👤 **{who.label}**")
