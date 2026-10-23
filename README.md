@@ -78,8 +78,10 @@ cp .env.example .env        # add ANTHROPIC_API_KEY / OPENAI_API_KEY / OPENROUTE
 
 streamlit run app/streamlit_app.py     # dashboard
 python -m secagents --json results.json  # CLI: writes security_report.md (add --docx r.docx --xlsx r.xlsx --pdf r.pdf)
-pytest                                  # 246 tests, no API keys needed
+pytest                                  # 262 tests, no API keys needed
 ```
+
+**Version:** the number lives in one place, the [`VERSION`](VERSION) file (for example `1.0.0`). Edit it and the browser tab, sidebar title, main title, page footer, sign-in page, report headers (Markdown, Word, Excel, PDF) and `python -m secagents --version` all show `Cyber Security AI Agent (v.1.0.0)` with the new number; a running app picks it up on its next rerun. `APP_VERSION` in the environment (or the Streamlit secrets) overrides the file. The `v.` prefix is `VERSION_PREFIX` in `secagents/version.py`.
 
 The CLI accepts your own data: `python -m secagents --logs /var/log/auth.log access.log --code ./src --requirements requirements.txt --dockerfile Dockerfile --config my_config.yaml`.
 The dashboard also has an **Upload my own files** mode, a **Scan a whole folder or repository** option (type a local path, a Windows network share, a GitHub link or a public Google Drive folder link, or press **Browse...** for a local folder; the source's `.gitignore` / `.ignore` entries are pre-filled into an editable, comma-separated exclude box) and an **Ask** tab for questions such as *"Are we affected by Log4Shell?"*.

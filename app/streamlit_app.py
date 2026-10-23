@@ -60,6 +60,7 @@ def _import_secagents() -> dict:
     from secagents.qa import ask
     from secagents.rag import embedding_backend, set_embedding_key
     from secagents.repo_scan import browse_folder, collect_repo_inputs, find_logs, ignore_entries
+    from secagents.version import app_title
     from secagents.session import activate as activate_session, live_dir as current_live_dir, new_session
     from secagents.sources import SourceError, classify as classify_source, resolve as resolve_source
 
@@ -76,7 +77,7 @@ except ImportError:
     _drop_secagents_modules()
     globals().update(_import_secagents())
 
-st.set_page_config(page_title="Cyber Security AI Agent", page_icon="🛡️", layout="wide")
+st.set_page_config(page_title=app_title(), page_icon="🛡️", layout="wide")
 
 # Public deployment: visitors sign in or continue as guests, and each gets their own router (typed API keys), live-log
 # folder, scan history and spending limits, because all visitors share one Python process. Locally nothing changes:
@@ -191,6 +192,12 @@ def pipeline_html(active: str | None, done: set[str]) -> str:
 
 def sev(s: str) -> str:
     return f"{SEV_ICON.get(s, '')} {s}"
+
+
+def show_footer() -> None:
+    """The bottom line of every page: the app's name and version (from the VERSION file)."""
+    st.divider()
+    st.caption(f"🛡️ {app_title()}")
 
 
 def reset_app() -> None:
@@ -321,7 +328,7 @@ def save_uploads(files, folder: Path) -> list[str]:
 nonce = st.session_state.setdefault("nonce", 0)
 
 with st.sidebar:
-    st.title("🛡️ Cyber Security AI Agent")
+    st.title(f"🛡️ {app_title()}")
     st.button("↺ Reset", on_click=reset_app, use_container_width=True,
               help="Clear the current results, chat and inputs. Scan history is kept.")
     st.caption("Five AI agents for detection, intel, scanning, response and compliance. Scan your GitHub Repositories, own logs, code and config files now.")
@@ -535,7 +542,7 @@ with st.sidebar:
     st.markdown(APP_CSS + (f"<style>{key_box_css}</style>" if key_box_css else ""), unsafe_allow_html=True)
 
 # ---- header: title, then the banner (a still when idle, an animated GIF while any scan is running) ----
-st.title("🛡️ Cyber Security AI Agent")
+st.title(f"🛡️ {app_title()}")
 st.markdown(
     f'<div class="sa-tagline" style="color:{tagline_color()}">Five AI agents for detection, intel, scanning, '
     f"response and compliance. <span class='sa-pulse-text' style='color:{cta_color()}'>"
@@ -779,6 +786,7 @@ if not result:
         )
     with agent_tab:
         agent_ui.render({}, nonce)
+    show_footer()
     st.stop()
 
 scan = st.session_state.get("scan")
@@ -916,3 +924,5 @@ with tabs[7]:
 
 with tabs[8]:
     agent_ui.render(result, nonce)
+
+show_footer()

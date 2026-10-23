@@ -10,10 +10,12 @@ from pathlib import Path
 from .exporters import export
 from .graph import default_inputs, stream
 from .llm import get_router
+from .version import app_title
 
 
 def main() -> None:
     ap = argparse.ArgumentParser(description="Run the five-agent security assessment.")
+    ap.add_argument("--version", action="version", version=app_title())
     ap.add_argument("--logs", nargs="*", help="Log files (default: the demo scenario)")
     ap.add_argument("--code", help="Source directory to scan")
     ap.add_argument("--requirements", help="requirements.txt to inventory")

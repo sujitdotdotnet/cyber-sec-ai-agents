@@ -5,6 +5,8 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from typing import Any
 
+from .version import version_label
+
 
 def _table(rows: list[list[Any]], header: list[str]) -> str:
     if not rows:
@@ -25,7 +27,7 @@ def build_report(state: dict[str, Any]) -> str:
 
     parts = [
         "# Security Assessment Report",
-        f"_Generated {now} by SecAgents (Log Monitor, Threat Intel, Vulnerability Scanner, Incident Response, Policy Checker)._",
+        f"_Generated {now} by SecAgents {version_label()} (Log Monitor, Threat Intel, Vulnerability Scanner, Incident Response, Policy Checker)._",
         "",
         "## Executive summary",
         f"- **Overall risk:** {intel.get('overall_risk', 'n/a')}",

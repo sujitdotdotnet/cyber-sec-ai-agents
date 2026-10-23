@@ -13,7 +13,10 @@ import re
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any
+
 from xml.sax.saxutils import escape as xml_escape
+
+from .version import version_label
 
 MIME = {
     "docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
@@ -252,7 +255,7 @@ def build_blocks(state: dict[str, Any], meta: dict[str, Any] | None = None) -> l
     now = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
     t = datasets(state)
     nar = dict(narratives(state))
-    sub = f"Generated {now} by SecAgents."
+    sub = f"Generated {now} by SecAgents {version_label()}."
     if meta.get("name"):
         sub = f"{meta['name']}. {sub}"
     b: list[Block] = [Block("title", "Security Assessment Report"), Block("subtitle", sub), Block("h2", "Executive summary"),
@@ -495,7 +498,7 @@ def to_pdf(state: dict[str, Any], meta: dict[str, Any] | None = None) -> bytes:
         canvas.saveState()
         canvas.setFont("Helvetica", 8)
         canvas.setFillColor(colors.HexColor("#888888"))
-        canvas.drawString(margin, 0.9 * cm, "SecAgents security assessment")
+        canvas.drawString(margin, 0.9 * cm, f"SecAgents {version_label()} security assessment")
         canvas.drawRightString(page[0] - margin, 0.9 * cm, f"Page {doc_.page}")
         canvas.restoreState()
 
@@ -554,7 +557,7 @@ def to_xlsx(state: dict[str, Any], meta: dict[str, Any] | None = None) -> bytes:
     ws = wb.active
     ws.title = "Summary"
     ws["A1"], ws["A1"].font = "Security Assessment Report", Font(bold=True, size=16, color=HEADER_FILL)
-    ws["A2"] = f"{meta.get('name') + '. ' if meta.get('name') else ''}Generated {datetime.now(timezone.utc):%Y-%m-%d %H:%M UTC} by SecAgents."
+    ws["A2"] = f"{meta.get('name') + '. ' if meta.get('name') else ''}Generated {datetime.now(timezone.utc):%Y-%m-%d %H:%M UTC} by SecAgents {version_label()}."
     for c, h in enumerate(("Metric", "Value"), 1):
         cell = put(ws, 4, c, h)
         cell.font, cell.fill = head_font, head_fill

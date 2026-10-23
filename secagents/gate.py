@@ -12,6 +12,7 @@ import streamlit as st
 
 from . import identity as ident, session
 from .config import settings
+from .version import app_title
 
 
 @dataclass(frozen=True)
@@ -60,6 +61,12 @@ def _guest() -> None:
     st.session_state["guest_ok"] = True
 
 
+def footer() -> None:
+    """The line at the bottom of every page: the app's name and version."""
+    st.divider()
+    st.caption(f"🛡️ {app_title()}")
+
+
 def resolve() -> ident.Identity:
     """The visitor's identity, or the landing page (and a stop) until they choose."""
     ss = st.session_state
@@ -76,7 +83,7 @@ def resolve() -> ident.Identity:
             ss["guest_identity"] = ident.guest(client=client_hash())
         return ss["guest_identity"]
 
-    st.title("🛡️ Cyber Security AI Agent")
+    st.title(f"🛡️ {app_title()}")
     st.caption("Five AI agents for detection, intel, scanning, response and compliance, plus a tool-using assistant.")
     left, right = st.columns(2)
     with left, st.container(border=True):
@@ -92,6 +99,7 @@ def resolve() -> ident.Identity:
         st.markdown(f"No account needed. Nothing is saved after you leave (you can export your chat), and the shared key "
                     f"allows {settings.session_token_cap:,} tokens a session. Pasting your own API key lifts the limit.")
         st.button("Continue as guest", on_click=_guest, key="gate-guest", use_container_width=True)
+    footer()
     st.stop()
 
 
