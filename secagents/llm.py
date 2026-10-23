@@ -61,6 +61,40 @@ def _scrub(text: str) -> str:
     return re.sub(r"(sk-[A-Za-z0-9_\-]{6,}|[A-Za-z0-9_\-]{32,})", "[redacted]", text)
 
 
+def _token_limit(provider: str, max_tokens: int) -> dict[str, int]:
+    """OpenAI's current chat models (gpt-5, o-series, ...) reject ``max_tokens``; ``max_completion_tokens`` is the name
+    they accept. OpenRouter keeps the classic ``max_tokens`` for every model behind it."""
+    return {"max_completion_tokens": max_tokens} if provider == "openai" else {"max_tokens": max_tokens}
+
+
+ANTHROPIC_MIN_OUTPUT = 16000  # Claude Opus 5.5 always thinks, and thinking counts against max_tokens: a small cap can leave no room for text
+
+
+def _anthropic_create(client, **kwargs):
+    """One Claude request: with the server-side refusal fallback if the account may use it, else without.
+
+    Security text can trip Claude's classifiers, so the fallback beta is tried first. If the API says the account or
+    model cannot use that beta (400 / 403 / 404 mentioning it), the same request is sent plainly instead of failing.
+    """
+    kwargs["max_tokens"] = max(kwargs["max_tokens"], ANTHROPIC_MIN_OUTPUT)
+    try:
+        return client.beta.messages.create(betas=["server-side-fallback-2026-07-01"], fallbacks="default", **kwargs)
+    except Exception as exc:  # noqa: BLE001
+        text = str(exc).lower()
+        if getattr(exc, "status_code", None) in (400, 403, 404) and ("beta" in text or "fallback" in text):
+            return client.messages.create(**kwargs)
+        raise
+
+
+def _check_claude_reply(resp, text: str, has_tool_calls: bool) -> None:
+    """Turn a reply that cannot be used into an error that says why (the router then tries the next provider)."""
+    if resp.stop_reason == "refusal":
+        category = getattr(getattr(resp, "stop_details", None), "category", None)
+        raise RuntimeError("Claude declined the request" + (f" ({category})" if category else ""))
+    if not text.strip() and not has_tool_calls:
+        raise RuntimeError(f"Claude returned no text (stop_reason={resp.stop_reason}); its thinking may have used the whole token budget")
+
+
 def _call_id(raw: Any) -> str:
     return str(raw) if raw else f"call_{uuid.uuid4().hex[:12]}"
 
@@ -193,18 +227,12 @@ class LLMRouter:
         # Opus 5.5 runs adaptive thinking by default; effort is the depth control.
         # fallbacks="default" lets the API re-route a declined request (security content can
         # trip the cyber classifier) to Anthropic's recommended fallback model.
-        resp = client.beta.messages.create(
-            model=self.cfg.claude_model,
-            max_tokens=max_tokens,
-            system=system,
-            messages=[{"role": "user", "content": prompt}],
-            output_config={"effort": self.cfg.claude_effort},
-            betas=["server-side-fallback-2026-07-01"],
-            fallbacks="default",
+        resp = _anthropic_create(
+            client, model=self.cfg.claude_model, max_tokens=max_tokens, system=system,
+            messages=[{"role": "user", "content": prompt}], output_config={"effort": self.cfg.claude_effort},
         )
-        if resp.stop_reason == "refusal":
-            raise RuntimeError("Claude declined the request")
         text = "".join(b.text for b in resp.content if getattr(b, "type", "") == "text")
+        _check_claude_reply(resp, text, False)
         return LLMResult(text=text, provider="anthropic", model=resp.model)
 
     def _call_openai_compatible(self, provider: str, system: str, prompt: str, max_tokens: int) -> LLMResult:
@@ -212,8 +240,8 @@ class LLMRouter:
         model = self.cfg.openai_model if provider == "openai" else self.cfg.openrouter_model
         resp = client.chat.completions.create(
             model=model,
-            max_tokens=max_tokens,
             messages=[{"role": "system", "content": system}, {"role": "user", "content": prompt}],
+            **_token_limit(provider, max_tokens),
         )
         return LLMResult(text=resp.choices[0].message.content or "", provider=provider, model=model)
 
@@ -223,15 +251,13 @@ class LLMRouter:
         extra: dict[str, Any] = {}
         if tools:
             extra["tools"] = [{"name": t["name"], "description": t["description"], "input_schema": t["parameters"]} for t in tools]
-        resp = client.beta.messages.create(
-            model=self.cfg.claude_model, max_tokens=max_tokens, system=system, messages=to_anthropic_messages(messages),
-            output_config={"effort": self.cfg.claude_effort}, betas=["server-side-fallback-2026-07-01"], fallbacks="default",
-            **extra,
+        resp = _anthropic_create(
+            client, model=self.cfg.claude_model, max_tokens=max_tokens, system=system, messages=to_anthropic_messages(messages),
+            output_config={"effort": self.cfg.claude_effort}, **extra,
         )
-        if resp.stop_reason == "refusal":
-            raise RuntimeError("Claude declined the request")
         text = "".join(b.text for b in resp.content if getattr(b, "type", "") == "text")
         calls = [ToolCall(_call_id(b.id), b.name, _parse_arguments(b.input)) for b in resp.content if getattr(b, "type", "") == "tool_use"]
+        _check_claude_reply(resp, text, bool(calls))
         usage = getattr(resp, "usage", None)
         return ChatResult(text, calls, "anthropic", resp.model, getattr(usage, "input_tokens", 0) or 0, getattr(usage, "output_tokens", 0) or 0)
 
@@ -241,7 +267,7 @@ class LLMRouter:
         extra: dict[str, Any] = {}
         if tools:
             extra["tools"] = [{"type": "function", "function": {"name": t["name"], "description": t["description"], "parameters": t["parameters"]}} for t in tools]
-        resp = client.chat.completions.create(model=model, max_tokens=max_tokens, messages=to_openai_messages(system, messages), **extra)
+        resp = client.chat.completions.create(model=model, messages=to_openai_messages(system, messages), **_token_limit(provider, max_tokens), **extra)
         msg = resp.choices[0].message
         calls = [ToolCall(_call_id(c.id), c.function.name, _parse_arguments(c.function.arguments)) for c in (getattr(msg, "tool_calls", None) or [])]
         usage = getattr(resp, "usage", None)
@@ -270,7 +296,10 @@ class LLMRouter:
 
     # ---- public API --------------------------------------------------------
     def complete(self, system: str, prompt: str, *, agent: str = "", max_tokens: int = 8000) -> LLMResult | None:
-        """Return the first successful completion across providers, or None if none worked."""
+        """Return the first successful completion across providers, or None if none worked.
+
+        When none worked, ``last_errors`` says why for each provider that was tried (keys removed)."""
+        self.last_errors = []
         for provider in self.available_providers():
             try:
                 if provider == "anthropic":
@@ -282,6 +311,7 @@ class LLMRouter:
                 return result
             except Exception as exc:  # noqa: BLE001 - any provider failure means "try the next one"
                 log.warning("LLM provider %s failed for %s: %s", provider, agent or "call", exc)
+                self.last_errors.append(f"{provider} ({self.model_for(provider)}): {_scrub(str(exc))[:300]}")
         return None
 
     def complete_json(self, system: str, prompt: str, *, agent: str = "", max_tokens: int = 8000) -> Any | None:

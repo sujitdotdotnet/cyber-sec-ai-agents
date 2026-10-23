@@ -32,6 +32,19 @@ def _compact(obj: Any, limit: int = 6000) -> str:
     return text[:limit] + ("..." if len(text) > limit else "")
 
 
+def _no_answer_note(router) -> str:
+    """Why there is no model-written answer: no key at all, or a key whose calls failed (with the provider's reason)."""
+    if not router.available_providers():
+        budget = getattr(router, "budget", None)
+        blocked = budget.blocked() if budget is not None else None
+        if blocked:
+            return blocked + " Here is the most relevant knowledge instead:"
+        return "No LLM is configured (no API key, or offline mode), so here is the most relevant knowledge:"
+    why = getattr(router, "last_errors", [])
+    detail = "\n\nWhat the providers said:" + "".join(f"\n- {e}" for e in why) if why else ""
+    return "A language model is configured, but the call failed, so here is the most relevant knowledge instead." + detail
+
+
 def ask(question: str, state: dict[str, Any]) -> dict[str, Any]:
     kb, router = get_kb(), get_router()
     agents = route(question)
@@ -49,5 +62,5 @@ def ask(question: str, state: dict[str, Any]) -> dict[str, Any]:
     if result:
         answer = result.text
     else:
-        answer = "No LLM is configured, so here is the most relevant knowledge:\n\n" + "\n\n".join(f"- {k}" for k in knowledge)
+        answer = _no_answer_note(router) + "\n\n" + "\n\n".join(f"- {k}" for k in knowledge)
     return {"answer": answer, "agents": agents, "sources": [h["id"] for h in rag["hits"]], "trace": rag["trace"]}

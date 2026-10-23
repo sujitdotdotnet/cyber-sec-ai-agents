@@ -78,7 +78,7 @@ cp .env.example .env        # add ANTHROPIC_API_KEY / OPENAI_API_KEY / OPENROUTE
 
 streamlit run app/streamlit_app.py     # dashboard
 python -m secagents --json results.json  # CLI: writes security_report.md (add --docx r.docx --xlsx r.xlsx --pdf r.pdf)
-pytest                                  # 306 tests, no API keys needed
+pytest                                  # 319 tests, no API keys needed
 ```
 
 **Version:** the number lives in one place, the [`VERSION`](VERSION) file (for example `1.0.0`). Edit it and the browser tab, sidebar title, main title, page footer, sign-in page, report headers (Markdown, Word, Excel, PDF) and `python -m secagents --version` all show `Cyber Security AI Agent (v.1.0.0)` with the new number; a running app picks it up on its next rerun. `APP_VERSION` in the environment (or the Streamlit secrets) overrides the file. The `v.` prefix is `VERSION_PREFIX` in `secagents/version.py`.

@@ -157,3 +157,100 @@ def test_chat_respects_the_enabled_switch_and_typed_keys():
     assert router.chat("s", HISTORY[:1]).text == "typed key works"
     router.enabled = False
     assert router.chat("s", HISTORY[:1]) is None
+
+
+# ---- token limit parameter, and why a call failed -------------------------------------------------------------
+def test_openai_gets_max_completion_tokens_and_openrouter_keeps_max_tokens():
+    for provider, wanted, unwanted in (("openai", "max_completion_tokens", "max_tokens"), ("openrouter", "max_tokens", "max_completion_tokens")):
+        router = make_router(provider_order=(provider,))
+        stub = OpenAIStub(openai_response("hi"))
+        wire(router, **{provider: stub})
+        router.complete("sys", "prompt", agent="t", max_tokens=123)
+        router.chat("sys", HISTORY[:1], TOOLS, max_tokens=456)
+        for call, n in zip(stub.sent, (123, 456)):
+            assert call[wanted] == n and unwanted not in call
+
+
+def test_complete_records_why_each_provider_failed_without_leaking_keys():
+    router = make_router(provider_order=("openrouter", "openai"))
+    wire(router, openrouter=OpenAIStub(error=RuntimeError("402 insufficient credits for key sk-or-v1-abcdef1234567890abcdef")),
+         openai=OpenAIStub(error=RuntimeError("400 unsupported parameter: max_tokens")))
+    assert router.complete("s", "p") is None
+    assert len(router.last_errors) == 2
+    assert "402 insufficient credits" in router.last_errors[0] and "sk-or-v1" not in router.last_errors[0]
+    assert router.last_errors[1].startswith("openai (") and "unsupported parameter" in router.last_errors[1]
+    wire(router, openrouter=OpenAIStub(openai_response("fine")), openai=OpenAIStub(openai_response("x")))
+    assert router.complete("s", "p").text == "fine" and router.last_errors == []  # reset on the next call
+
+
+# ---- Claude call hardening --------------------------------------------------------------------------------------
+class ApiError(Exception):
+    def __init__(self, status_code, message):
+        super().__init__(message)
+        self.status_code = status_code
+
+
+class ClaudeStub:
+    """Records which endpoint was used; the beta endpoint can be made to fail like an account without beta access."""
+
+    def __init__(self, beta_error=None, content=None, stop="end_turn", category=None):
+        self.beta_sent, self.plain_sent, self.beta_error = [], [], beta_error
+        self.content = content if content is not None else [NS(type="text", text="hello")]
+        reply = NS(content=self.content, stop_reason=stop, model="claude-stub", usage=NS(input_tokens=5, output_tokens=3),
+                   stop_details=NS(category=category) if category else None)
+        self.beta = NS(messages=NS(create=lambda **kw: self._beta(kw, reply)))
+        self.messages = NS(create=lambda **kw: (self.plain_sent.append(kw), reply)[1])
+
+    def _beta(self, kw, reply):
+        self.beta_sent.append(kw)
+        if self.beta_error:
+            raise self.beta_error
+        return reply
+
+
+def claude_router(stub):
+    router = make_router(provider_order=("anthropic",))
+    wire(router, anthropic=stub)
+    return router
+
+
+def test_claude_is_asked_with_the_refusal_fallback_and_a_roomy_token_limit():
+    stub = ClaudeStub()
+    assert claude_router(stub).complete("s", "p", max_tokens=4000).text == "hello"
+    sent = stub.beta_sent[0]
+    assert sent["betas"] == ["server-side-fallback-2026-07-01"] and sent["fallbacks"] == "default"
+    assert sent["max_tokens"] == 16000  # thinking shares the budget on Opus 5.5, so 4,000 is raised
+    claude_router(stub).complete("s", "p", max_tokens=64000)
+    assert stub.beta_sent[1]["max_tokens"] == 64000  # a larger request is left alone
+
+
+def test_an_account_without_the_fallback_beta_still_gets_an_answer():
+    for status, message in ((400, "Unexpected value(s) `server-side-fallback-2026-07-01` for the `anthropic-beta` header"),
+                            (403, "This organization does not have access to the beta feature"), (404, "fallbacks is not available")):
+        stub = ClaudeStub(beta_error=ApiError(status, message))
+        res = claude_router(stub).complete("s", "p")
+        assert res.text == "hello" and len(stub.plain_sent) == 1
+        assert "betas" not in stub.plain_sent[0] and "fallbacks" not in stub.plain_sent[0]
+        assert stub.plain_sent[0]["output_config"] == {"effort": settings.claude_effort}  # everything else is unchanged
+
+
+def test_other_api_errors_are_not_retried_and_are_reported():
+    for status, message in ((401, "invalid x-api-key"), (404, "model: claude-opus-5-5 not found"), (429, "rate limited")):
+        stub = ClaudeStub(beta_error=ApiError(status, message))
+        router = claude_router(stub)
+        assert router.complete("s", "p") is None and stub.plain_sent == []
+        assert message in router.last_errors[0] and router.last_errors[0].startswith("anthropic (")
+
+
+def test_a_refusal_names_its_category_and_an_empty_reply_says_why():
+    router = claude_router(ClaudeStub(content=[], stop="refusal", category="cyber"))
+    assert router.complete("s", "p") is None and "Claude declined the request (cyber)" in router.last_errors[0]
+    router = claude_router(ClaudeStub(content=[NS(type="thinking", thinking="...")], stop="max_tokens"))
+    assert router.chat("s", HISTORY[:1], TOOLS) is None
+    assert "returned no text (stop_reason=max_tokens)" in router.last_errors[0]
+
+
+def test_a_reply_that_only_calls_a_tool_is_fine():
+    router = claude_router(ClaudeStub(content=[NS(type="tool_use", id="tu", name="lookup_cve", input={"id": "CVE-1"})], stop="tool_use"))
+    res = router.chat("s", HISTORY[:1], TOOLS)
+    assert res.text == "" and res.tool_calls == [ToolCall("tu", "lookup_cve", {"id": "CVE-1"})]
