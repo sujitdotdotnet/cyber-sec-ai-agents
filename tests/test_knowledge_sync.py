@@ -487,3 +487,14 @@ def test_the_top_tagline_also_shows_when_the_knowledge_was_updated():
     assert cta in tagline and "📚 Knowledge updated 20" in tagline
     assert tagline.index(cta) < tagline.index("📚 Knowledge updated")  # appended after the call to action
     assert "MITRE ATT&amp;CK" in tagline  # escaped for HTML
+
+
+def test_the_top_knowledge_line_is_white():
+    from pathlib import Path as P
+    from streamlit.testing.v1 import AppTest
+
+    app = str(P(__file__).resolve().parent.parent / "app" / "streamlit_app.py")
+    at = AppTest.from_file(app, default_timeout=120).run()
+    css = " ".join(m.value for m in at.markdown if ".sa-knowledge" in m.value)
+    rule = css[css.index(".sa-knowledge{"):].split("}")[0]
+    assert "color:#fff" in rule and "opacity" not in rule  # pure white, not dimmed

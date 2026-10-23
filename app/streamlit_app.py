@@ -130,7 +130,7 @@ APP_CSS = """
 /* status dot: red and still when idle, green and pulsing while any scan is running */
 .sa-dot{display:inline-block;width:12px;height:12px;border-radius:50%;background:#d64545;margin-right:8px;vertical-align:middle}
 .sa-dot.on{background:#2ecc71;animation:sa-greenpulse 1.2s ease-in-out infinite}
-.sa-knowledge{font-size:.85rem;font-weight:400;opacity:.8;letter-spacing:0}
+.sa-knowledge{font-size:.85rem;font-weight:400;color:#fff !important;letter-spacing:0}
 .sa-tagline{font-size:1.35rem;font-weight:600;letter-spacing:.2px;line-height:1.35;margin:-.25rem 0 .75rem}
 /* fade in and out (1.6 s per cycle) for the call-to-action; off for people who prefer reduced motion */
 .sa-pulse-text{animation:sa-textpulse 1.6s ease-in-out infinite}
