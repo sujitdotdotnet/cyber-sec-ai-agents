@@ -22,7 +22,6 @@ def vfile(tmp_path, monkeypatch):
     f.write_text("2.3.4\n")
     monkeypatch.setattr(version, "VERSION_FILE", f)
     monkeypatch.delenv("APP_VERSION", raising=False)
-    version._cache.update(mtime=None, value="")
     return f
 
 
@@ -45,7 +44,6 @@ def test_a_leading_v_is_ignored_and_a_missing_file_is_harmless(vfile, tmp_path, 
     vfile.write_text("v1.2.0")
     assert version.get_version() == "1.2.0"
     monkeypatch.setattr(version, "VERSION_FILE", tmp_path / "nope")
-    version._cache.update(mtime=None, value="")
     assert version.get_version() == "0.0.0"
 
 

@@ -1,0 +1,28 @@
+{
+  "sources": {
+    "cisa_kev": {
+      "count": 1754,
+      "source_date": "2026-10-21",
+      "url": "https://www.cisa.gov/sites/default/files/feeds/known_exploited_vulnerabilities.json",
+      "hash": "599e79b8ecb5cc59",
+      "updated": "2026-10-23T11:18:27Z"
+    },
+    "osv": {
+      "count": 1711,
+      "packages": 111,
+      "source_date": "2026-10-22",
+      "url": "https://osv.dev",
+      "hash": "245ea5b0b1e43238",
+      "updated": "2026-10-23T11:20:10Z"
+    },
+    "mitre_attack": {
+      "count": 706,
+      "version": "20.0",
+      "source_date": "2026-10-13",
+      "url": "https://raw.githubusercontent.com/mitre-attack/attack-stix-data/master/enterprise-attack/enterprise-attack.json",
+      "hash": "8d1e79d17b53f34c",
+      "updated": "2026-10-23T11:20:11Z"
+    }
+  },
+  "updated_at": "2026-10-23T11:20:11Z"
+}

@@ -13,6 +13,7 @@ import streamlit as st
 from . import identity as ident, session
 from .config import settings
 from .about import ABOUT_MD, ABOUT_TITLE
+from .knowledge import footer_text, source_table
 from .version import app_title
 
 
@@ -77,8 +78,13 @@ def footer() -> None:
     """The bottom of every page: the app's name and version, then the collapsed About panel below it."""
     st.divider()
     st.caption(f"🛡️ {app_title()}")
+    st.caption(f"📚 {footer_text()}")
     with st.expander(ABOUT_TITLE, expanded=False):
         st.markdown(ABOUT_MD)
+        rows = source_table()
+        if rows:
+            st.markdown("**Knowledge sources** (refreshed daily; package versions are also checked live against OSV during a scan)")
+            st.dataframe(rows, hide_index=True, use_container_width=True)
 
 
 def resolve() -> ident.Identity:

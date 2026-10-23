@@ -15,6 +15,8 @@ import re
 from typing import Any
 
 from ..config import settings
+from .. import osv
+from ..knowledge import kev_ids
 from ..llm import get_router
 from ..rag import agentic_retrieve, get_kb
 from .base import sev_rank, severity_counts, sort_by_severity, trace_event
@@ -38,8 +40,7 @@ def version_key(v: str) -> tuple:
     return tuple((1, int(p)) if p.isdigit() else (0, p) for p in parts)
 
 
-def satisfies(version: str, spec: str) -> bool | None:
-    """True/False if `version` is inside `spec` (e.g. '>=2.0,<2.15.0'); None if spec is not machine-readable."""
+def _satisfies_all(version: str, spec: str) -> bool | None:
     clauses = [c.strip() for c in spec.split(",") if c.strip()]
     if not clauses or not all(re.match(r"^(<=|>=|<|>|==)\s*[\w.]+$", c) for c in clauses):
         return None
@@ -53,7 +54,27 @@ def satisfies(version: str, spec: str) -> bool | None:
     return True
 
 
+def satisfies(version: str, spec: str) -> bool | None:
+    """True/False if `version` is inside `spec`; None if it cannot be decided.
+
+    A spec is a comma-joined conjunction (``>=2.0,<2.15.0``), or several of those joined by ``||`` (an advisory that
+    affects more than one release line). Any alternative that matches is a match.
+    """
+    results = [_satisfies_all(version, alt) for alt in spec.split("||")]
+    if any(r is True for r in results):
+        return True
+    return False if all(r is False for r in results) else None
+
+
+def _first_fix(spec: str, fixed: str, version: str) -> str:
+    """The fixed version that applies to ``version``: of an advisory with several fix releases, the lowest one above it."""
+    candidates = [f.strip() for f in fixed.split(",") if f.strip() and f.strip()[0].isdigit()]
+    above = [f for f in candidates if version_key(f) > version_key(version)]
+    return min(above, key=version_key) if above else (fixed or "no fix listed")
+
+
 def match_inventory(kb, inventory: list[dict[str, str]]) -> list[dict[str, Any]]:
+    kev = kev_ids()
     matches = []
     for comp in inventory:
         if comp.get("version") in (None, "", "unpinned"):
@@ -64,11 +85,35 @@ def match_inventory(kb, inventory: list[dict[str, str]]) -> list[dict[str, Any]]
             if satisfies(comp["version"], cve["affected"]):
                 matches.append({
                     "cve": cve["id"], "title": cve["title"], "package": comp["name"], "installed": comp["version"],
-                    "fixed": cve["fixed"], "cvss": cve["cvss"], "severity": cve["severity"], "source": comp.get("source", ""),
-                    "affected": True, "ecosystem": comp["ecosystem"],
+                    "fixed": _first_fix(cve["affected"], cve["fixed"], comp["version"]), "cvss": cve["cvss"], "severity": cve["severity"],
+                    "source": comp.get("source", ""), "affected": True, "ecosystem": comp["ecosystem"],
+                    "exploited_in_the_wild": cve["id"] in kev or any(a in kev for a in cve.get("aliases", [])),
+                    "osv_id": cve.get("osv_id", ""),
+                    "data_source": "OSV (synced)" if cve.get("source") == "OSV" else "Knowledge base",
                     "note": "Version-based match; distro backports may already carry the fix." if comp["ecosystem"] == "os" else "",
                 })
     return sorted(matches, key=lambda m: m["cvss"], reverse=True)
+
+
+def merge_live(local: list[dict[str, Any]], live: list[dict[str, Any]], inventory: list[dict[str, str]]) -> list[dict[str, Any]]:
+    """Add what OSV reports right now that the local files do not already list for the same package and version."""
+    kev = kev_ids()
+    seen = {(m["package"].lower(), m["installed"], m["cve"]) for m in local}
+    seen |= {(m["package"].lower(), m["installed"], m["osv_id"]) for m in local if m.get("osv_id")}
+    source = {c["name"].lower(): c.get("source", "") for c in inventory}
+    added = []
+    for rec in live:
+        ids = {rec["id"], rec["osv_id"], *rec.get("aliases", [])}
+        if any((rec["package"], rec["installed"], i) in seen for i in ids):
+            continue
+        seen |= {(rec["package"], rec["installed"], i) for i in ids}
+        added.append({
+            "cve": rec["id"], "title": rec["title"], "package": rec["package"], "installed": rec["installed"],
+            "fixed": _first_fix(rec["affected"], rec["fixed"], rec["installed"]), "cvss": rec["cvss"], "severity": rec["severity"],
+            "source": source.get(rec["package"], ""), "affected": True, "ecosystem": "pypi",
+            "exploited_in_the_wild": bool(ids & kev), "osv_id": rec["osv_id"], "data_source": "OSV (live)", "note": "",
+        })
+    return sorted(local + added, key=lambda m: m["cvss"], reverse=True)
 
 
 def load_feed() -> dict[str, Any]:
@@ -93,6 +138,12 @@ def run_threat_intel(state: dict[str, Any]) -> dict[str, Any]:
     trace = []
 
     cve_matches = match_inventory(kb, inventory)
+    live, live_info = osv.live_lookup(inventory)  # exact versions asked of OSV right now; a no-op offline or if OSV is down
+    cve_matches = merge_live(cve_matches, live, inventory)
+    if live_info["queried"] and osv.live_enabled():
+        trace.append(f"OSV live lookup: {live_info['queried']} package versions checked, {live_info['advisories']} advisories"
+                     + (f" ({live_info['cached']} answered from cache)" if live_info["cached"] else "")
+                     + (f"; unavailable: {live_info['error']}" if live_info["error"] else ""))
     installed = {c["name"].lower() for c in inventory}
 
     # Exploit attempts in logs -> which CVE are they targeting, and do we run that component?
@@ -160,7 +211,8 @@ def run_threat_intel(state: dict[str, Any]) -> dict[str, Any]:
     summary = None
     if risk_items or ioc_hits:
         payload = json.dumps({
-            "cve_matches": [{k: m[k] for k in ("cve", "package", "installed", "fixed", "cvss")} for m in cve_matches],
+            "cve_matches": [{k: m[k] for k in ("cve", "package", "installed", "fixed", "cvss", "exploited_in_the_wild")} for m in cve_matches[:15]],
+            "cve_matches_total": len(cve_matches),
             "exploit_attempts": exploit_attempts, "correlations": correlations, "ioc_hits": ioc_hits,
         }, indent=1)
         result = router.complete(

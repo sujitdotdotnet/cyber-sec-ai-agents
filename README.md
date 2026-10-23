@@ -78,7 +78,7 @@ cp .env.example .env        # add ANTHROPIC_API_KEY / OPENAI_API_KEY / OPENROUTE
 
 streamlit run app/streamlit_app.py     # dashboard
 python -m secagents --json results.json  # CLI: writes security_report.md (add --docx r.docx --xlsx r.xlsx --pdf r.pdf)
-pytest                                  # 262 tests, no API keys needed
+pytest                                  # 306 tests, no API keys needed
 ```
 
 **Version:** the number lives in one place, the [`VERSION`](VERSION) file (for example `1.0.0`). Edit it and the browser tab, sidebar title, main title, page footer, sign-in page, report headers (Markdown, Word, Excel, PDF) and `python -m secagents --version` all show `Cyber Security AI Agent (v.1.0.0)` with the new number; a running app picks it up on its next rerun. `APP_VERSION` in the environment (or the Streamlit secrets) overrides the file. The `v.` prefix is `VERSION_PREFIX` in `secagents/version.py`.
@@ -117,7 +117,7 @@ flowchart LR
     G <--> MEM[(SQLite memory<br/>chats + facts)]
 ```
 
-- **Tools** (`secagents/tools.py`): `search_knowledge`, `lookup_record`, `analyze_log_text`, `get_assessment_summary`, `get_findings`, `get_incident_steps`, `recall_memory` run freely. `run_assessment`, `add_live_log_lines`, `remember` and `forget_memory` pause for your **Approve / Deny** click. Arguments are validated, results capped, and a failing tool returns its error as text instead of crashing the loop.
+- **Tools** (`secagents/tools.py`): `search_knowledge`, `lookup_record`, `analyze_log_text`, `check_package_vulnerabilities`, `check_known_exploited`, `get_assessment_summary`, `get_findings`, `get_incident_steps`, `recall_memory` run freely. `run_assessment`, `add_live_log_lines`, `remember` and `forget_memory` pause for your **Approve / Deny** click. Arguments are validated, results capped, and a failing tool returns its error as text instead of crashing the loop.
 - **Orchestration** (`secagents/agent.py`): a LangGraph model → tools → model loop with a checkpointer, `interrupt()` for approvals, and limits per question (`AGENT_MAX_STEPS`, `AGENT_TURN_TOKENS`). Tool output and pasted logs are treated as data: the system prompt tells the model never to follow instructions found in them. Failover keeps the whole conversation, so if one provider fails mid-chat the next picks up the same tool history.
 - **Memory** (`secagents/memory.py`): chats are saved per thread in SQLite (`MEMORY_DB`, default `.memory/memory.db`) and can be reopened from the *Conversation* menu. Long-term facts are recalled by meaning (local embeddings plus keyword overlap, no API call) and added to the prompt; the agent asks before saving one, secrets are never stored, and every record is scoped to a workspace. **Export / import** (JSON) is in the *🧠 Memory* panel because free hosting has a temporary disk.
 - **MCP** (`secagents/mcp_server.py`, `mcp_client.py`): the read-only tools, a `knowledge://{kind}/{id}` resource and a `triage_logs` prompt are also an MCP server. Use it from Claude Desktop or Cursor:
@@ -155,6 +155,23 @@ Everyone is also held to `DAILY_TOKEN_CAP` together and `RATE_PER_MINUTE` model 
 
 **Docker** (any host): `docker build -t secagents .` then `docker run -p 8501:8501 --env-file .env secagents` (add `-e SECAGENTS_PUBLIC=1` for a shared deployment). CI (`.github/workflows/ci.yml`) runs the tests and builds this image on every push.
 
+## Knowledge updates: daily sync + live OSV lookup
+
+The vulnerability and ATT&CK data is no longer a fixed demo set. It is refreshed every day from authoritative sources, and the exact package versions in a scan are also checked live.
+
+| Source | What | File |
+|---|---|---|
+| [CISA KEV](https://www.cisa.gov/known-exploited-vulnerabilities-catalog) | Vulnerabilities known to be exploited in the wild (flagged on every CVE match) | `knowledge/kev.jsonl` |
+| [OSV.dev](https://osv.dev) | Advisories for the PyPI packages in `knowledge/watchlist.txt` (affected ranges, fixed versions, CVSS) | `knowledge/cves_synced.jsonl` |
+| [MITRE ATT&CK](https://attack.mitre.org) | The Enterprise matrix: techniques, tactics, mitigations and detection guidance | `knowledge/attack_synced.jsonl` |
+
+- **Daily sync**: `.github/workflows/knowledge-sync.yml` runs every day at 07:00 India time (IST; `30 01 * * *` in UTC, which is what GitHub schedules in) and on demand from the Actions tab, downloads the sources, checks that the pipeline still works on the new data, and commits only if something changed; Streamlit Cloud then redeploys. Run it yourself with `python -m secagents.knowledge_sync` (`--only kev,osv,attack`, `--dry-run`). A source that fails, or returns implausibly little data, keeps its old file and the job is marked failed, so a broken feed cannot wipe the knowledge base.
+- **Live lookup**: during each assessment, every pinned PyPI version found in the code is asked of OSV directly, so a scan is current even between syncs. Answers are cached for a day in the app database; if OSV cannot be reached (or `SECAGENTS_OFFLINE=1`, or `OSV_LIVE=0`) the scan continues with the local files. Matches show their origin (*Knowledge base*, *OSV (synced)*, *OSV (live)*) and whether the CVE is on CISA's list.
+- **Hand-written files win**: `cves.jsonl` and `attack.jsonl` are never overwritten; a synced record with the same id is ignored. Put anything you want pinned there. The demo scenario's data (including the documentation-range IPs in `threat_feed.json`) stays as it was.
+- **Freshness is shown** in the page footer, for example *Knowledge updated 2026-10-23 UTC · CISA KEV 1,754 (catalog 2026-10-21) · OSV 1,711 advisories · MITRE ATT&CK v20.0*, with a per-source table in the About panel (`knowledge/meta.json`).
+- **Add packages**: edit `knowledge/watchlist.txt`. Packages not on it are still checked live. Only the highest-scoring and actively exploited synced CVEs are embedded for semantic search (the rest are used for version matching), which keeps start-up fast.
+- **Agent tools**: `check_package_vulnerabilities` (live OSV for an exact version) and `check_known_exploited` (CISA KEV).
+
 ## The demo scenario
 
 `samples/` contains a seeded attack story (regenerate with `python samples/generate_logs.py`):
@@ -189,6 +206,7 @@ secagents/
   session.py     Per-visitor router, folders, history and limits for public deployments
   gate.py        Sign in / Continue as guest front door;  identity.py  who the visitor is, access list
   limits.py      Token, rate and download limits kept in the database;  db.py  SQLite or Postgres
+  knowledge_sync.py  Daily sync of CISA KEV / OSV / MITRE ATT&CK;  osv.py  OSV conversion and live lookup;  knowledge.py  last-updated info
 knowledge/       cves.jsonl, attack.jsonl, controls.jsonl, threat_feed.json
 samples/         demo logs, vulnerable app, system config, live_examples/ (paste-in attack lines)
 app/             Streamlit dashboard (assets/: banner still PNG and scanning GIF)
@@ -199,7 +217,7 @@ Dockerfile, .github/workflows/ci.yml, .streamlit/, mcp_servers.json   deployment
 
 ## Extending
 
-- **More CVEs**: append to `knowledge/cves.jsonl` (`affected` takes specifiers like `>=2.0,<2.15.0`), or load an NVD export into the same shape.
+- **More CVEs**: add packages to `knowledge/watchlist.txt` (synced daily from OSV), pin your own in `knowledge/cves.jsonl` (`affected` takes specifiers like `>=2.0,<2.15.0`, and `||` for several release lines), or load an NVD export into the same shape.
 - **New detections**: add a parser or rule in `secagents/agents/log_monitor.py`.
 - **New controls**: add a line to `knowledge/controls.jsonl` naming the checks that evidence it, and a check in `policy_checker.py` if needed.
 
@@ -232,12 +250,13 @@ Requirement: *an AI-powered cybersecurity system made of multiple agents that mo
 | 12 | Real-time threat detection, analysis and response | ✅ | **Live scan** switch next to *Run assessment*: follows the log files as they grow, alerts the first time each attack appears and refreshes the full agent pipeline and dashboard counters on new alerts (`live.py`). It runs while the dashboard is open; it is not a background service |
 | 13 | Suggest fixes automatically | ✅ | Code fix suggestions, incident playbook, compliance roadmap, all LLM-written with rule-based fallbacks |
 | 14 | Useful for security engineers, DevOps and IT teams | ✅ | Streamlit dashboard, CLI (`python -m secagents`), report export to Word, Excel, PDF, Markdown and JSON, folder scan, scan history |
-| 15 | Agent with **tools** | ✅ | `tools.py`: 11 tools; the model chooses them through provider-neutral tool calling in the router (`llm.py`) |
+| 15 | Agent with **tools** | ✅ | `tools.py`: 13 tools; the model chooses them through provider-neutral tool calling in the router (`llm.py`) |
 | 16 | Agent **memory** | ✅ | `memory.py`: saved chats plus long-term facts, workspace-scoped, secrets refused, export / import |
 | 17 | Agent **orchestration** | ✅ | `agent.py`: LangGraph loop with approvals (`interrupt`), step and token limits, provider failover mid-conversation |
 | 18 | Agent **interface** | ✅ | 🤖 Agent tab: chat, visible tool calls and results, approve / deny cards, conversation picker, memory panel |
 | 19 | **MCP** | ✅ | `mcp_server.py` (tools, resource, prompt) and `mcp_client.py`; the agent can route calls through it. No public `/mcp` URL on Streamlit Cloud: run the server locally or in Docker |
 | 20 | Deployed on a **public cloud** | 🟡 | Streamlit Community Cloud settings, guest / sign-in gate, per-user storage and limits, and Docker / CI are in the repo. The deployment itself, the sign-in provider and the Postgres database are yours to create; the Postgres path and real sign-in were not exercised against live services from here |
+| 21 | **Current vulnerability data** | ✅ | Daily sync from CISA KEV, OSV.dev and MITRE ATT&CK, live OSV lookup of scanned versions, last-updated line in the footer (see *Knowledge updates*) |
 
 ✅ implemented · 🟡 partly implemented · ❌ not implemented
 

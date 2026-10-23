@@ -1,0 +1,123 @@
+# PyPI packages whose advisories the daily sync downloads from OSV.dev into cves_synced.jsonl.
+# One name per line; "#" starts a comment. Add the packages your projects use. Packages in your scans that are not
+# listed here are still checked, live, against OSV during each assessment.
+
+# web frameworks and servers
+flask
+django
+fastapi
+starlette
+tornado
+aiohttp
+gunicorn
+uvicorn
+werkzeug
+jinja2
+markupsafe
+bottle
+pyramid
+sanic
+streamlit
+gradio
+# http, networking, tls
+requests
+urllib3
+httpx
+certifi
+idna
+paramiko
+pyopenssl
+cryptography
+pyjwt
+python-jose
+oauthlib
+authlib
+twisted
+websockets
+scapy
+# data formats and parsing
+pyyaml
+lxml
+defusedxml
+xmltodict
+beautifulsoup4
+markdown
+pillow
+reportlab
+pypdf
+pypdf2
+python-docx
+openpyxl
+jsonschema
+simplejson
+ujson
+orjson
+# data science and ml
+numpy
+pandas
+scipy
+scikit-learn
+matplotlib
+tensorflow
+torch
+transformers
+keras
+mlflow
+ray
+jupyter
+notebook
+jupyterlab
+ipython
+# databases and orm
+sqlalchemy
+psycopg2
+pymysql
+mysqlclient
+pymongo
+redis
+peewee
+alembic
+# tooling, packaging, config
+pip
+setuptools
+wheel
+virtualenv
+twine
+pytest
+tox
+poetry
+pipenv
+python-dotenv
+click
+celery
+kombu
+boto3
+botocore
+awscli
+ansible
+docker
+kubernetes
+fabric
+salt
+# ai / llm
+langchain
+langchain-core
+langchain-community
+langgraph
+openai
+anthropic
+chromadb
+llama-index
+# misc commonly vulnerable
+pycrypto
+pycryptodome
+pyinstaller
+py
+numexpr
+joblib
+dask
+sentry-sdk
+gitpython
+protobuf
+grpcio
+pygments

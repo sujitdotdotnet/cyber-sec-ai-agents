@@ -26,6 +26,19 @@ COLLECTIONS = {
     "controls": "controls.jsonl",
 }
 
+# Regenerated daily by secagents.knowledge_sync. The hand-written files above always win for a shared id, so what you
+# pin by hand (or the demo scenario depends on) is never overwritten.
+SYNCED = {
+    "cves": "cves_synced.jsonl",
+    "attack": "attack_synced.jsonl",
+}
+# Matching by package scans every CVE record, but only the most important synced ones are embedded for semantic search
+# (thousands of advisories would slow every cold start for little retrieval benefit).
+INDEX_SYNCED_CVES = 300
+# Hand-written records are the vetted, demo-critical ones. When a synced record is about as close a match, they come first.
+PINNED_BONUS = 0.05
+PINNED_POOL = 6  # extra candidates fetched so a pinned record just outside the top k can still be promoted
+
 _TOKEN = re.compile(r"[a-z0-9][a-z0-9.\-]+")
 HASH_DIM = 512
 
@@ -67,6 +80,7 @@ class KnowledgeBase:
         else:
             self.client = chromadb.EphemeralClient()
         self.records: dict[str, dict[str, dict[str, Any]]] = {}
+        self.pinned: dict[str, set[str]] = {}  # ids of the hand-written records, which rank slightly above synced ones
         self._openai = None
         if self.backend == "openai":
             self.embed(["probe"])  # switches to local embeddings if OpenAI is unreachable
@@ -109,37 +123,69 @@ class KnowledgeBase:
         )
 
     # ---- ingestion ---------------------------------------------------------
+    def _read(self, name: str) -> list[dict[str, Any]]:
+        path = Path(self.cfg.knowledge_dir) / name
+        if not path.exists():
+            return []
+        out = []
+        for line in path.read_text(encoding="utf-8").splitlines():
+            if line.strip():
+                try:
+                    out.append(json.loads(line))
+                except json.JSONDecodeError:  # a half-written synced file must not break the app
+                    continue
+        return out
+
     def load_records(self, kind: str) -> list[dict[str, Any]]:
-        path = Path(self.cfg.knowledge_dir) / COLLECTIONS[kind]
-        return [json.loads(line) for line in path.read_text().splitlines() if line.strip()]
+        """Hand-written records, then synced ones whose id is not already taken."""
+        base = self._read(COLLECTIONS[kind])
+        taken = {r["id"] for r in base}
+        synced = [r for r in self._read(SYNCED[kind]) if r["id"] not in taken] if kind in SYNCED else []
+        return base + synced
+
+    def _to_index(self, kind: str, recs: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        if kind != "cves":
+            return recs
+        pinned = {r["id"] for r in self._read(COLLECTIONS[kind])}
+        extra = sorted((r for r in recs if r["id"] not in pinned), key=lambda r: (bool(r.get("kev")), r.get("cvss", 0)), reverse=True)
+        return [r for r in recs if r["id"] in pinned] + extra[:INDEX_SYNCED_CVES]
 
     def ingest(self) -> None:
+        """Make the vector index match the files: add new records, refresh changed ones, drop ones that disappeared."""
         for kind in COLLECTIONS:
             recs = self.load_records(kind)
             self.records[kind] = {r["id"]: r for r in recs}
+            self.pinned[kind] = {r["id"] for r in self._read(COLLECTIONS[kind])}
+            indexed = self._to_index(kind, recs)
             col = self._collection(kind)
-            existing = set(col.get(ids=[r["id"] for r in recs])["ids"])
-            new = [r for r in recs if r["id"] not in existing]
-            if not new:
-                continue
-            texts = [doc_text(kind, r) for r in new]
-            col.add(
-                ids=[r["id"] for r in new],
-                documents=texts,
-                embeddings=self.embed(texts),
-                metadatas=[{"kind": kind} for _ in new],
-            )
+            texts = {r["id"]: doc_text(kind, r) for r in indexed}
+            stamp = {i: hashlib.sha1(t.encode()).hexdigest()[:12] for i, t in texts.items()}
+            have = col.get(ids=list(texts), include=["metadatas"])
+            current = {i: (m or {}).get("h") for i, m in zip(have["ids"], have["metadatas"])}
+            stale = [i for i in col.get(include=[])["ids"] if i not in texts]
+            if stale:
+                col.delete(ids=stale)
+            todo = [i for i in texts if current.get(i) != stamp[i]]
+            for start in range(0, len(todo), 200):
+                batch = todo[start:start + 200]
+                col.upsert(
+                    ids=batch,
+                    documents=[texts[i] for i in batch],
+                    embeddings=self.embed([texts[i] for i in batch]),
+                    metadatas=[{"kind": kind, "h": stamp[i]} for i in batch],
+                )
 
     # ---- search ------------------------------------------------------------
     def search(self, kind: str, query: str, k: int = 4) -> list[dict[str, Any]]:
         col = self._collection(kind)
         q = self.embed([query])  # may switch the backend (bad key), so fetch the collection afterwards
         col = self._collection(kind)
-        ids, dists, docs = self._query(col, q, k)
-        return [
-            {"id": i, "score": round(1 - d, 3), "text": t, "record": self.records[kind][i]}
+        ids, dists, docs = self._query(col, q, k + PINNED_POOL)
+        hits = [
+            {"id": i, "score": round(1 - d + (PINNED_BONUS if i in self.pinned.get(kind, ()) else 0), 3), "text": t, "record": self.records[kind][i]}
             for i, d, t in zip(ids, dists, docs)
         ]
+        return sorted(hits, key=lambda h: -h["score"])[:k]
 
     @staticmethod
     def _query(col, query_embedding: list[list[float]], k: int, attempts: int = 4) -> tuple[list, list, list]:

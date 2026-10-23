@@ -1,0 +1,55 @@
+name: Daily knowledge sync
+
+# Refreshes knowledge/ from CISA KEV, OSV.dev and MITRE ATT&CK, checks the pipeline still works on the new data, and
+# commits only if something changed. Streamlit Cloud redeploys when the commit lands. Run it by hand from the Actions tab.
+on:
+  schedule:
+    # GitHub schedules in UTC. India time (IST) is UTC+5:30, so 01:30 UTC is 07:00 IST.
+    - cron: "30 01 * * *"   # every day at 07:00 IST (01:30 UTC)
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: knowledge-sync
+  cancel-in-progress: false
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.14"
+          cache: pip
+      - run: pip install -r requirements.txt
+
+      - name: Download the latest data
+        id: sync
+        run: python -m secagents.knowledge_sync
+        continue-on-error: true   # a source that fails keeps its old file; the others still update, and the job is marked failed at the end
+
+      - name: Check the pipeline still works on the new data
+        env:
+          SECAGENTS_OFFLINE: "1"
+        run: pytest -q tests/test_knowledge_sync.py tests/test_agents.py tests/test_tools.py
+
+      - name: Commit the changes
+        run: |
+          if git diff --quiet -- knowledge && [ -z "$(git ls-files --others --exclude-standard knowledge)" ]; then
+            echo "Knowledge is already up to date."
+          else
+            git config user.name "knowledge-sync[bot]"
+            git config user.email "knowledge-sync@users.noreply.github.com"
+            git add knowledge
+            git commit -m "chore(knowledge): daily sync $(date -u +%F)"
+            git push
+          fi
+
+      - name: Fail the job if a source could not be refreshed
+        if: steps.sync.outcome == 'failure'
+        run: |
+          echo "At least one source failed; see the 'Download the latest data' step."
+          exit 1

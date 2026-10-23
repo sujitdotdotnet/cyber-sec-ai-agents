@@ -136,6 +136,36 @@ def incident_steps(ctx: ToolContext, a: dict[str, Any]) -> Any:
     return steps[: max(1, min(int(a.get("limit", 10)), 30))]
 
 
+def check_known_exploited(ctx: ToolContext, a: dict[str, Any]) -> Any:
+    from .knowledge import kev_record, load_meta
+
+    rec = kev_record(a["id"])
+    if rec:
+        return {"known_exploited": True, "source": "CISA Known Exploited Vulnerabilities", **rec}
+    if not load_meta().get("sources", {}).get("cisa_kev"):
+        return "The CISA KEV catalog has not been loaded yet (run the knowledge sync), so this cannot be checked."
+    return {"known_exploited": False, "id": a["id"], "note": "Not on CISA's Known Exploited Vulnerabilities list as of the last sync."}
+
+
+def check_package_vulnerabilities(ctx: ToolContext, a: dict[str, Any]) -> Any:
+    from . import osv
+    from .knowledge import kev_ids
+
+    if not osv.live_enabled():
+        return "Live OSV lookup is switched off (offline mode), so only the local knowledge base is available: use search_knowledge."
+    item = [{"name": a["package"], "version": a["version"], "ecosystem": "pypi"}]
+    if not osv.pinned_components(item):
+        return "Give an exact version such as 2.19.1 (a range or 'latest' cannot be checked)."
+    matches, info = osv.live_lookup(item)
+    if info["error"]:
+        return f"OSV could not be reached ({info['error']}). Try again, or use the local knowledge base."
+    kev = kev_ids()
+    return {"package": a["package"], "version": a["version"], "advisories": len({m["osv_id"] for m in matches}),
+            "results": [{"id": m["id"], "osv_id": m["osv_id"], "severity": m["severity"], "cvss": m["cvss"], "fixed": m["fixed"],
+                         "title": m["title"], "known_exploited": bool({m["id"], *m["aliases"]} & kev)}
+                        for m in sorted(matches, key=lambda m: -m["cvss"])[:15]], "source": "OSV.dev (live)"}
+
+
 def recall_memory(ctx: ToolContext, a: dict[str, Any]) -> Any:
     if ctx.memory is None:
         return "Memory is not enabled."
@@ -185,6 +215,10 @@ TOOLS: dict[str, Tool] = {t.name: t for t in [
                "limit": {"type": "integer"}}, ["section"]), get_findings),
     Tool("get_incident_steps", "The ordered incident-response steps from the latest assessment.",
          _obj({"limit": {"type": "integer"}}), incident_steps),
+    Tool("check_package_vulnerabilities", "Ask OSV.dev, live, which known vulnerabilities affect an exact PyPI package version (e.g. requests 2.19.1).",
+         _obj({"package": {"type": "string"}, "version": {"type": "string"}}, ["package", "version"]), check_package_vulnerabilities),
+    Tool("check_known_exploited", "Is a CVE on CISA's Known Exploited Vulnerabilities list (actively exploited in the wild)?",
+         _obj({"id": {"type": "string", "description": "CVE id, e.g. CVE-2021-44228"}}, ["id"]), check_known_exploited),
     Tool("recall_memory", "Search what was remembered about this user/workspace in earlier conversations.",
          _obj({"query": {"type": "string"}}, ["query"]), recall_memory),
     Tool("remember", "Save a durable fact (a preference, an asset, a decision) for later conversations. Never save secrets.",
