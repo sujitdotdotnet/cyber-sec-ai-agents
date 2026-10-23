@@ -57,14 +57,12 @@ class Db:
     # ---- connections -----------------------------------------------------------------------------------------
     def _connect(self) -> Any:
         if self.postgres:
-            import ssl
-
             import pg8000.dbapi
 
             p = parse_pg_url(self.target)
             conn = pg8000.dbapi.connect(
                 user=p["user"], password=p["password"], host=p["host"], port=p["port"], database=p["database"],
-                ssl_context=ssl.create_default_context() if p["ssl"] else None, timeout=15,
+                ssl_context=ssl_context_for(p["sslmode"], p["sslrootcert"]), timeout=15,
             )
             return conn
         conn = sqlite3.connect(self.target, check_same_thread=False, timeout=10)
@@ -151,7 +149,29 @@ def parse_pg_url(url: str) -> dict[str, Any]:
     query = parse_qs(m["query"] or "")
     return {"user": unquote(m["user"] or ""), "password": unquote(m["password"] or ""), "host": m["host"],
             "port": int(m["port"] or 5432), "database": (m["db"] or "") or None,
-            "ssl": query.get("sslmode", ["require"])[0] not in ("disable", "allow", "prefer")}
+            "sslmode": query.get("sslmode", ["require"])[0], "sslrootcert": query.get("sslrootcert", [""])[0]}
+
+
+def ssl_context_for(sslmode: str, rootcert: str = ""):
+    """TLS settings with the same meaning as libpq's sslmode.
+
+    ``disable`` / ``allow``: no TLS. ``prefer`` / ``require`` (the default): the connection is encrypted but the server's
+    certificate is not checked, which is what libpq does and what hosted poolers with their own CA (Supabase) need; it
+    protects against eavesdropping, not against someone impersonating the server. ``verify-ca`` / ``verify-full``: the
+    certificate is checked against ``sslrootcert`` (a CA file path in the URL) or the system CAs, and for verify-full the
+    host name too.
+    """
+    import ssl
+
+    if sslmode in ("disable", "allow"):
+        return None
+    if sslmode in ("verify-ca", "verify-full"):
+        ctx = ssl.create_default_context(cafile=rootcert or None)
+        ctx.check_hostname = sslmode == "verify-full"
+        return ctx
+    ctx = ssl.create_default_context()
+    ctx.check_hostname, ctx.verify_mode = False, ssl.CERT_NONE
+    return ctx
 
 
 def redact_url(url: str) -> str:

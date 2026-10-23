@@ -136,8 +136,8 @@ def test_urls_with_placeholder_brackets_or_at_signs_in_the_password_parse_instea
     p = parse_pg_url("postgresql://postgres:[YOUR-PASSWORD]@db.abc.supabase.co:5432/postgres")
     assert (p["user"], p["password"], p["host"], p["port"], p["database"]) == ("postgres", "[YOUR-PASSWORD]", "db.abc.supabase.co", 5432, "postgres")
     q = parse_pg_url("postgresql://u:p@ss@h.neon.tech/db?sslmode=require")
-    assert (q["password"], q["host"], q["ssl"]) == ("p@ss", "h.neon.tech", True)
-    assert parse_pg_url("postgres://u:p@h/db?sslmode=disable")["ssl"] is False
+    assert (q["password"], q["host"], q["sslmode"]) == ("p@ss", "h.neon.tech", "require")
+    assert parse_pg_url("postgres://u:p@h/db?sslmode=disable")["sslmode"] == "disable"
     with pytest.raises(ValueError, match="not a valid"):
         parse_pg_url("postgresql://no-at-sign-here")
 
@@ -171,3 +171,25 @@ def test_without_a_database_url_there_is_no_error(tmp_path, monkeypatch):
     monkeypatch.setattr(session, "_shared", {"db": None, "error": "", "at": 0.0})
     monkeypatch.setattr(session, "settings", replace(settings, database_url="", memory_db=tmp_path / "local.db"))
     assert not session.shared_db().postgres and session.db_error() == ""
+
+
+def test_sslmode_has_the_same_meaning_as_libpq():
+    import ssl
+
+    from secagents.db import ssl_context_for
+
+    assert ssl_context_for("disable") is None and ssl_context_for("allow") is None
+    for mode in ("require", "prefer"):  # encrypted, certificate not checked: hosted poolers with their own CA work
+        ctx = ssl_context_for(mode)
+        assert ctx.verify_mode == ssl.CERT_NONE and ctx.check_hostname is False
+    ca = ssl_context_for("verify-ca")
+    assert ca.verify_mode == ssl.CERT_REQUIRED and ca.check_hostname is False
+    full = ssl_context_for("verify-full")
+    assert full.verify_mode == ssl.CERT_REQUIRED and full.check_hostname is True
+
+
+def test_a_root_certificate_path_in_the_url_is_passed_through():
+    from secagents.db import parse_pg_url
+
+    p = parse_pg_url("postgresql://u:p@h/db?sslmode=verify-full&sslrootcert=/etc/ca.pem")
+    assert (p["sslmode"], p["sslrootcert"]) == ("verify-full", "/etc/ca.pem")
