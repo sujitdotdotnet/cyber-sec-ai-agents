@@ -11,10 +11,12 @@ import json
 import logging
 import re
 import uuid
+from collections import Counter
 from dataclasses import dataclass, field
 from typing import Any
 
 from .config import Settings, settings as default_settings
+from .redact import scrub, scrub_messages
 
 log = logging.getLogger(__name__)
 
@@ -154,10 +156,28 @@ class LLMRouter:
         self.preferred: str | None = None  # tried first when set; the rest follow provider_order
         self.enabled = True  # False: skip every provider, so agents use their rule-based output (fast, free)
         self.key_overrides: dict[str, str] = {}  # keys typed in the dashboard; they win over the .env keys
+        self.redactions: Counter = Counter()  # what was removed from prompts before they were sent, by kind (for the audit trail)
         self.last_errors: list[str] = []  # why each provider failed on the latest chat() call (keys redacted), for the UI
         self.budget: Any = None  # public deployments: an object with blocked() -> str | None and spend(tokens)
 
     # ---- provider plumbing -------------------------------------------------
+    @property
+    def redaction_total(self) -> int:
+        return sum(self.redactions.values())
+
+    def _guard_messages(self, messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        clean, found = scrub_messages(messages)
+        self.redactions.update(found)
+        return clean
+
+    def _guard(self, text: str) -> str:
+        """The guardrail every model call passes through: secrets and personal data never leave."""
+        if not self.cfg.redact_before_model or not text:
+            return text
+        clean, found = scrub(text)
+        self.redactions.update(found)
+        return clean
+
     def ordered_providers(self) -> list[str]:
         """Configured fallback order, with the preferred provider moved to the front."""
         order = list(self.cfg.provider_order)
@@ -172,6 +192,7 @@ class LLMRouter:
             "anthropic": self.cfg.claude_model,
             "openai": self.cfg.openai_model,
             "openrouter": self.cfg.openrouter_model,
+            "local": self.cfg.local_llm_model,
         }.get(provider, "")
 
     def api_key(self, provider: str) -> str:
@@ -183,6 +204,7 @@ class LLMRouter:
             "anthropic": self.cfg.anthropic_api_key,
             "openai": self.cfg.openai_api_key,
             "openrouter": self.cfg.openrouter_api_key,
+            "local": (self.cfg.local_llm_api_key or "not-needed") if self.cfg.local_llm_base_url else "",  # most local servers need no key
         }.get(provider, "")
 
     def key_source(self, provider: str) -> str:
@@ -217,6 +239,10 @@ class LLMRouter:
                 from openai import OpenAI
 
                 client = OpenAI(api_key=key, base_url=OPENROUTER_BASE_URL)
+            elif provider == "local":
+                from openai import OpenAI
+
+                client = OpenAI(api_key=key, base_url=self.cfg.local_llm_base_url)
             else:
                 raise ValueError(f"unknown provider {provider}")
             self._clients[(provider, key)] = client
@@ -237,7 +263,7 @@ class LLMRouter:
 
     def _call_openai_compatible(self, provider: str, system: str, prompt: str, max_tokens: int) -> LLMResult:
         client = self._client(provider)
-        model = self.cfg.openai_model if provider == "openai" else self.cfg.openrouter_model
+        model = self.model_for(provider)
         resp = client.chat.completions.create(
             model=model,
             messages=[{"role": "system", "content": system}, {"role": "user", "content": prompt}],
@@ -263,7 +289,7 @@ class LLMRouter:
 
     def _chat_openai_compatible(self, provider: str, system: str, messages: list[dict[str, Any]], tools: list[dict[str, Any]], max_tokens: int) -> ChatResult:
         client = self._client(provider)
-        model = self.cfg.openai_model if provider == "openai" else self.cfg.openrouter_model
+        model = self.model_for(provider)
         extra: dict[str, Any] = {}
         if tools:
             extra["tools"] = [{"type": "function", "function": {"name": t["name"], "description": t["description"], "parameters": t["parameters"]}} for t in tools]
@@ -281,6 +307,8 @@ class LLMRouter:
         conversation the next one picks it up with the same history. Returns None when no provider worked.
         """
         self.last_errors = []
+        if self.cfg.redact_before_model:
+            system, messages = self._guard(system), self._guard_messages(messages)
         for provider in self.available_providers():
             try:
                 result = (self._chat_anthropic(system, messages, tools or [], max_tokens) if provider == "anthropic"
@@ -300,6 +328,7 @@ class LLMRouter:
 
         When none worked, ``last_errors`` says why for each provider that was tried (keys removed)."""
         self.last_errors = []
+        system, prompt = self._guard(system), self._guard(prompt)
         for provider in self.available_providers():
             try:
                 if provider == "anthropic":

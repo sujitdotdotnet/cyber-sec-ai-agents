@@ -48,7 +48,7 @@ def _drop_stale_secagents_modules() -> None:
 
 def _import_secagents() -> dict:
     """Every import from the secagents package, together, so they can be retried as one unit."""
-    from secagents import agent_ui, gate, history
+    from secagents import agent_ui, gate, history, review_ui
     from secagents.config import settings
     from secagents.exporters import MIME as EXPORT_MIME, export
     from secagents.graph import default_inputs, stream
@@ -113,6 +113,9 @@ AGENT_LABEL = {
     "threat_intel": "🌐 Threat Intelligence",
     "incident_response": "🚨 Incident Response",
     "policy_checker": "📋 Policy Checker",
+    "correlator": "🔗 Correlator",
+    "critic": "🧪 Uncertainty Critic",
+    "human_gate": "🧑‍⚖️ Human gate",
     "reporter": "📝 Reporter",
 }
 BAR_COLOR = "#2a78d6"
@@ -163,7 +166,8 @@ def scan_status_html(scanning: bool, detail: str) -> str:
             f'<b>{"Scanning" if scanning else "Idle"}</b> <span style="opacity:.7">· {detail}</span></div>')
 
 
-PIPELINE = ["log_monitor", "vuln_scanner", "threat_intel", "incident_response", "policy_checker", "reporter"]
+PIPELINE = ["log_monitor", "vuln_scanner", "threat_intel", "incident_response", "policy_checker", "correlator", "critic", "human_gate", "reporter"]
+AFTER = {"correlator": "critic", "critic": "human_gate", "human_gate": "reporter"}  # what starts when each review step finishes
 PIPELINE_CSS = """
 <style>
 .sa-pipe{display:flex;flex-wrap:wrap;gap:8px;margin:4px 0 10px}
@@ -182,10 +186,12 @@ PIPELINE_CSS = """
 """
 
 
-def pipeline_html(active: str | None, done: set[str]) -> str:
+def pipeline_html(active: str | set[str] | None, done: set[str]) -> str:
+    """The progress chips. ``active`` can be several agents: independent specialists run at the same time."""
+    working = {active} if isinstance(active, str) else set(active or ())
     chips = []
     for name in PIPELINE:
-        state = "active" if name == active else "done" if name in done else ""
+        state = "active" if name in working else "done" if name in done else ""
         label = AGENT_LABEL.get(name, name)
         spin = '<span class="sa-spin">⚙️</span> ' if state == "active" else ("✓ " if state == "done" else "")
         dots = '<span class="sa-dots"><span>.</span><span>.</span><span>.</span></span>' if state == "active" else ""
@@ -585,6 +591,7 @@ def run_assessment(inputs: dict, name: str, source_label: str, use_llm: bool = T
     state: dict = {}
     trace: list = []
     get_router().calls.clear()
+    get_router().redactions.clear()
     done: set[str] = set()
     with llm_enabled(use_llm), st.status("Agents working...", expanded=True) as status:
         banner = st.empty()
@@ -592,11 +599,16 @@ def run_assessment(inputs: dict, name: str, source_label: str, use_llm: bool = T
         for node, update in stream(inputs):
             if node in PIPELINE:
                 done.add(node)
+            working: set[str] = set()
             if node == "supervisor" and update.get("next_agent"):
-                # the supervisor just dispatched this agent, so it is the one working now
-                nxt = update["next_agent"]
-                banner.markdown(pipeline_html(nxt, done), unsafe_allow_html=True)
-                status.update(label=f"{AGENT_LABEL.get(nxt, nxt)} working...", expanded=True)
+                # the supervisor just dispatched a wave: every agent in it is working now, at the same time
+                working = set(update.get("next_agents") or [update["next_agent"]])
+            elif node in AFTER:
+                working = {AFTER[node]}  # a review step finished, the next one starts
+            if working:
+                banner.markdown(pipeline_html(working, done), unsafe_allow_html=True)
+                names = " + ".join(AGENT_LABEL.get(n, n) for n in sorted(working))
+                status.update(label=f"{names} working{' in parallel' if len(working) > 1 else ''}...", expanded=True)
             for t in update.get("trace", []):
                 trace.append(t)
                 st.write(f"**{AGENT_LABEL.get(t['agent'], t['agent'])}**: {t['message']}")
@@ -605,6 +617,7 @@ def run_assessment(inputs: dict, name: str, source_label: str, use_llm: bool = T
         status.update(label="Assessment complete", state="complete", expanded=True)
     state["trace"] = trace
     state["llm_calls"] = list(get_router().calls)
+    state["redactions"] = get_router().redaction_total  # secrets / personal data removed from what the models were sent
     scan_id = history.save(state, name, source_label)
     st.session_state["result"] = state
     st.session_state["scan"] = {k: v for k, v in history.load(scan_id).items() if k != "result"}
@@ -808,6 +821,10 @@ with tabs[0]:
     c[2].metric("Log detections", len(logs.get("events", [])))
     c[3].metric("Code & config findings", len(vulns.get("findings", [])))
     c[4].metric("CVEs affecting us", len(intel.get("cve_matches", [])))
+    if review_ui.confidence_line(result):
+        st.caption(review_ui.confidence_line(result)
+                   + (f" · 🛡️ {result['redactions']} secret/personal-data value(s) removed before the models" if result.get("redactions") else ""))
+    review_ui.critic_panel(result)
     left, right = st.columns([3, 2])
     with left:
         st.subheader("Incident briefing")
@@ -846,7 +863,7 @@ with tabs[2]:
     st.subheader("Attacks that hit real weaknesses")
     st.dataframe(pd.DataFrame(intel.get("correlations", [])), hide_index=True, use_container_width=True)
     st.subheader("CVEs affecting deployed components")
-    st.dataframe(pd.DataFrame(intel.get("cve_matches", [])), hide_index=True, use_container_width=True)
+    st.dataframe(review_ui.cve_frame(intel), hide_index=True, use_container_width=True)
     a, b = st.columns(2)
     a.subheader("Exploit attempts")
     a.dataframe(pd.DataFrame(intel.get("exploit_attempts", [])), hide_index=True, use_container_width=True)
@@ -871,6 +888,10 @@ with tabs[3]:
 with tabs[4]:
     for inc in ir.get("incidents", []):
         st.markdown(f"**{sev(inc['severity'])} {inc['id']} [{inc['priority']}] {inc['title']}**  \n{inc['summary']}")
+        review_ui.similar_past(inc)
+    review_ui.correlation_panel(result)
+    st.divider()
+    review_ui.gate_panel(result, scan, (st.session_state["visitor"].identity.label if settings.public else "local user"), nonce)
     st.divider()
     phase = None
     for s in ir.get("steps", []):

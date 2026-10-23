@@ -89,13 +89,14 @@ def datasets(state: dict[str, Any], full: bool = False) -> dict[str, Table]:
             [e["id"], e["severity"], e["type"], e.get("src_ip") or e.get("target", ""), e.get("count", ""),
              ", ".join(e.get("mitre", []))] for e in ev], (1,))
 
-    t["CVEs"] = Table("CVEs affecting deployed components", ["CVE", "Component", "Installed", "Fixed in", "CVSS", "Severity", "Note"], [
-        [m["cve"], m["package"], m["installed"], m["fixed"], m["cvss"], m.get("severity", ""), m.get("note", "")]
+    t["CVEs"] = Table("CVEs affecting deployed components", ["CVE", "Component", "Installed", "Fixed in", "CVSS", "Severity", "Note", "Confidence", "Data source", "CISA KEV"], [
+        [m["cve"], m["package"], m["installed"], m["fixed"], m["cvss"], m.get("severity", ""), m.get("note", ""), m.get("confidence", ""),
+         m.get("data_source", ""), "exploited" if m.get("exploited_in_the_wild") else ""]
         for m in intel.get("cve_matches", [])], (5,))
-    t["Attack correlation"] = Table("Attacks that hit real weaknesses", ["Attack", "Source", "Code location", "Severity", "Verdict"], [
-        [c["attack"], c["src_ip"], c["location"], c.get("severity", ""), c["verdict"]] for c in intel.get("correlations", [])], (3,))
-    t["Exploit attempts"] = Table("Exploit attempts", ["Attack", "CVE", "Component", "Present", "Verdict"], [
-        [a["attack"], a["cve"], a.get("component", ""), "yes" if a.get("component_present") else "no", a["verdict"]]
+    t["Attack correlation"] = Table("Attacks that hit real weaknesses", ["Attack", "Source", "Code location", "Severity", "Verdict", "Confidence"], [
+        [c["attack"], c["src_ip"], c["location"], c.get("severity", ""), c["verdict"], c.get("confidence", "")] for c in intel.get("correlations", [])], (3,))
+    t["Exploit attempts"] = Table("Exploit attempts", ["Attack", "CVE", "Component", "Present", "Verdict", "Confidence"], [
+        [a["attack"], a["cve"], a.get("component", ""), "yes" if a.get("component_present") else "no", a["verdict"], a.get("confidence", "")]
         for a in intel.get("exploit_attempts", [])])
     t["IOCs"] = Table("Known-bad indicators", ["Indicator", "Reputation", "Tags", "Seen in"], [
         [i["indicator"], i["reputation"], ", ".join(i["tags"]), i.get("seen_in", "")] for i in intel.get("ioc_hits", [])])
@@ -115,6 +116,18 @@ def datasets(state: dict[str, Any], full: bool = False) -> dict[str, Table]:
         [i["id"], i["severity"], i["priority"], i["title"], i["summary"]] for i in ir.get("incidents", [])], (1,))
     t["Playbook"] = Table("Incident response playbook (NIST SP 800-61)", ["#", "Phase", "Priority", "Action", "Command", "Owner"], [
         [s["step"], s["phase"], s["priority"], s["action"], s.get("command", ""), s["owner"]] for s in ir.get("steps", [])])
+    corr, critic, gate = state.get("correlation", {}) or {}, state.get("critic", {}) or {}, state.get("containment_gate", {}) or {}
+    t["Correlation"] = Table("Correlated incidents (events, weaknesses, CVEs, techniques, control gaps)", ["Incident", "Title", "Events", "Attackers", "Code weaknesses", "CVEs", "ATT&CK", "Known-bad", "Control gaps exposed"], [
+        [ln["incident"], ln["title"], ", ".join(ln["events"]), ", ".join(ln["attackers"]), ", ".join(ln["weaknesses"]), ", ".join(ln["cves"]),
+         ", ".join(ln["techniques"]), ", ".join(ln["known_bad"]), "; ".join(ln["control_gaps"])] for ln in corr.get("links", [])])
+    t["Containment"] = Table("Containment and eradication actions (human approval gate; nothing is executed by the tool)", ["ID", "Incident", "Phase", "Priority", "Action", "Proposed command", "Status", "Decided by", "Approved command"], [
+        [a["id"], a["incident"], a["phase"], a["priority"], a["action"], a["command"], a["status"], a["decided_by"], a["approved_command"]] for a in gate.get("actions", [])])
+    t["Approval audit"] = Table("Approval audit trail", ["When (UTC)", "By", "Action", "Decision", "Command before", "Command after"], [
+        [e["at"], e["by"], e["action"], e["decision"], e["command_before"], e["command_after"]] for e in gate.get("audit", [])])
+    t["Review"] = Table("Uncertain findings (uncertainty critic)", ["Kind", "Item", "Confidence", "Why"], [
+        [u["kind"], u["id"], u["confidence"], u["reason"]] for u in critic.get("uncertain", [])])
+    t["Unverified"] = Table("Exposures that could not be verified", ["Component", "Ecosystem", "Why"], [
+        [u["component"], u["ecosystem"], u["reason"]] for u in critic.get("unverified", [])])
     t["Compliance"] = Table("Framework scores", ["Framework", "Score %", "Pass", "Partial", "Fail", "Controls"], [
         [f["framework"], f["score"], f["pass"], f["partial"], f["fail"], f["total"]] for f in comp.get("frameworks", [])])
     t["Fixes"] = Table("Prioritized fixes (by controls closed)", ["Fix", "Controls closed", "Evidence", "Recommended action"], [
@@ -146,6 +159,15 @@ def summary_rows(state: dict[str, Any]) -> list[list[Any]]:
         ["Attacker IPs", ", ".join(logs.get("attackers", [])) or "none"],
     ]
     rows += [[f"Compliance: {f['framework']}", f"{f['score']}%"] for f in comp.get("frameworks", [])]
+    critic, gate = state.get("critic", {}) or {}, state.get("containment_gate", {}) or {}
+    if critic:
+        c = critic.get("counts", {})
+        rows.append(["Findings reviewed by the critic (high / medium / low confidence)", f"{c.get('high', 0)} / {c.get('medium', 0)} / {c.get('low', 0)}"])
+    if gate.get("actions"):
+        n = {s: sum(1 for a in gate["actions"] if a["status"] == s) for s in ("pending", "approved", "rejected")}
+        rows.append(["Containment actions (this tool executes none of them)", f"{n['pending']} awaiting approval, {n['approved']} approved, {n['rejected']} rejected"])
+    if state.get("redactions"):
+        rows.append(["Secrets / personal data removed before reaching a model", state["redactions"]])
     return rows
 
 
@@ -276,12 +298,14 @@ def build_blocks(state: dict[str, Any], meta: dict[str, Any] | None = None) -> l
     section("3. Vulnerability Scanner", ["Findings"])
     b.append(Block("h3", "Suggested fixes"))
     b.extend(md_blocks(nar["Vulnerability Scanner: suggested fixes"]))
-    section("4. Incident Response playbook", ["Incidents", "Playbook"])
+    section("4. Incident Response playbook", ["Incidents", "Correlation", "Playbook", "Containment"] + (["Approval audit"] if t["Approval audit"].rows else []))
     section("5. Policy Checker: compliance gaps", ["Compliance"], "")
     b.extend(md_blocks(nar["Policy Checker: remediation roadmap"]))
     for k in ("Fixes", "Control gaps"):
         b.append(Block("h3", t[k].title))
         b.append(Block("table", table=t[k]) if t[k].rows else Block("p", "None."))
+    section("6. Uncertainty review: what to treat with caution", ["Review", "Unverified"],
+            (state.get("critic", {}) or {}).get("caveat", "") or "The critic found nothing that needs a caveat.")
     return b
 
 

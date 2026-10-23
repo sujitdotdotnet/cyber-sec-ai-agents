@@ -37,36 +37,55 @@ The dashboard runs on a long-lived **Streamlit** host, and the project ships wit
 
 ## Architecture
 
+**Pattern: a supervisor with parallel specialists, an uncertainty critic and a human gate.**
+
 ```mermaid
 flowchart LR
-    subgraph Inputs
-        L[Logs<br/>auth / nginx / firewall]
-        C[Code + requirements<br/>+ Dockerfile]
-        Y[System config]
+    T([Trigger: upload, folder, GitHub link, Live scan, CLI]) -->|new input| S{{Assessment Supervisor<br/>plans, fans out, correlates}}
+    subgraph W1[Wave 1 - in parallel]
+        LM[📜 Log Monitor<br/>parses logs, finds attacks]
+        VS[🔍 Vulnerability Scanner<br/>Bandit, secrets, Dockerfile, Trivy]
     end
-    S{{Supervisor<br/>LangGraph}}
-    LM[📜 Log Monitor]
-    VS[🔍 Vulnerability Scanner]
-    TI[🌐 Threat Intel]
-    IR[🚨 Incident Response]
-    PC[📋 Policy Checker]
-    R[📝 Report + Dashboard]
-    KB[(Chroma vector store<br/>CVEs · ATT&CK · controls)]
-    LLM[[Model router<br/>OpenRouter → Claude → OpenAI<br/>selectable in the sidebar]]
-
-    L --> LM
-    C --> VS
-    Y --> VS & PC
-    S --> LM & VS
-    LM & VS --> TI --> IR --> PC --> R
-    TI & PC & LM -. agentic RAG .-> KB
-    LM & VS & TI & IR & PC -. reasoning .-> LLM
+    TI[🌐 Threat Intelligence<br/>matches CVEs, maps to ATT&CK]
+    subgraph W3[Wave 3 - in parallel]
+        IR[🚨 Incident Response<br/>drafts the NIST 800-61 plan]
+        PC[📋 Policy Checker<br/>NIST, ISO 27001, SOC 2]
+    end
+    S -->|fan out| LM & VS
+    LM & VS -->|results| S
+    S -->|fan out| TI
+    TI -->|results| S
+    S -->|fan out| IR & PC
+    IR & PC -->|results| S
+    S -->|all done| CO[🔗 Correlator<br/>joins findings per incident]
+    CO -->|review| CR[🧪 Uncertainty Critic<br/>flags low-confidence or unverified findings]
+    CR -->|revise: caveats written into the summaries| G{{🧑‍⚖️ Human gate<br/>containment needs approval}}
+    G -->|proposed actions| P([Security engineer<br/>reviews, edits, approves])
+    P -->|approved| R[(Scan history + report<br/>prioritized, with audit trail)]
+    VS --> BT[[Bandit / Trivy / secrets]]
+    TI --> OSV[[OSV.dev - live + daily sync]]
+    TI --> KEV[[CISA KEV]]
+    TI & PC & IR -. agentic RAG .-> KB[(Chroma: ATT&CK, NIST controls, past incidents)]
+    CR -. every model call .-> GR[Guardrails:<br/>strip secrets and PII, self-hosted option]
 ```
 
-- **Supervisor graph** (`secagents/graph.py`): a LangGraph `StateGraph` where a supervisor node routes to whichever agent's dependencies are satisfied, then hands off to the reporter.
-- **Agentic RAG** (`secagents/rag/`): retrieve from Chroma, let the LLM grade relevance, rewrite the query and retry once. Embeddings use OpenAI when a key is set, otherwise a local hashed embedding.
-- **Model router** (`secagents/llm.py`): tries providers in `LLM_PROVIDER_ORDER` (default `openrouter,anthropic,openai`); the sidebar **LLM provider** dropdown (default OpenRouter) moves the chosen one to the front and shows its model from `.env`. Claude calls use `claude-opus-5-5` with server-side refusal fallbacks, so security content that trips a classifier is rerouted instead of failing.
+- **Supervisor** (`secagents/graph.py`): a LangGraph `StateGraph`. It plans waves from a dependency table and dispatches **every specialist whose inputs are ready, at the same time**: Log Monitor and Vulnerability Scanner first; Threat Intelligence once it has both; Incident Response and the Policy Checker together once it has the intel. The trace shows the plan and each wave (for example `dispatching log_monitor + vuln_scanner in parallel`).
+- **Correlator** (`correlate.py`): the supervisor's join step. For each incident it links the log events, the code weaknesses those attacks hit, the CVEs, ATT&CK techniques, known-bad addresses and the control gaps the attack exposes.
+- **Uncertainty critic** (`critic.py`): re-checks each CVE match's version against the advisory's affected range on its own, gives every match, exploit attempt, correlation and indicator a **confidence** (high, medium, low) with the reason, lists exposures that could not be verified (unpinned packages), and writes the caveats into the narrative the model wrote so it cannot sound surer than the data. It is deterministic and calls no model.
+- **Human gate** (`approvals.py`): every Containment and Eradication step becomes a *proposed action*. A person reviews it in the **Response** tab, may edit the command, and approves or rejects it; each decision is recorded with who, when and the command before and after. **SecAgents executes nothing:** approved actions go into a downloadable runbook script that the engineer reads and runs. Decisions are saved inside the scan, so they survive a reload.
+- **Agentic RAG** (`secagents/rag/`): retrieve from Chroma, let the LLM grade relevance, rewrite the query and retry once. Collections: CVEs, ATT&CK techniques, compliance controls, and **past incidents** (`incident_memory.py`): when an incident is declared, the owner's closest earlier incidents are attached ("resembles INC-01 in the scan of 12 Oct"). Past incidents are filtered per owner and never kept for guests.
+- **Model router** (`secagents/llm.py`): tries providers in `LLM_PROVIDER_ORDER` (default `openrouter,anthropic,openai`; a **self-hosted** model joins as `local`). The sidebar **LLM provider** dropdown moves the chosen one to the front. Claude calls use `claude-opus-5-5` with server-side refusal fallbacks.
 - **Deterministic first, LLM second**: every agent detects with explainable rules, then uses the LLM for correlation, narrative and remediation. With no keys the whole pipeline still runs.
+
+**Guardrails**
+
+| Guardrail | How it works |
+|---|---|
+| **Strip secrets and PII before the model** | Every prompt, chat history, tool argument and embedding query passes through `redact.py`: API keys, tokens, private keys, `password=` style values, connection-string passwords, e-mail addresses, card and national-ID numbers become `[REDACTED:...]`. IP addresses, user names and CVE ids are kept (they are the evidence). The count removed is shown on the Overview and in the report. Off only with `REDACT_BEFORE_MODEL=0`. |
+| **Human approval for containment** | The human gate above. Nothing is approved by default and nothing is executed by the tool. |
+| **Version check before CVE matching** | Matches are made only when the installed version is inside the advisory's affected range; unpinned packages are not guessed at, and the critic re-checks every match independently and lists the unverified ones. |
+| **Mark low confidence as uncertain** | The critic's confidence column, review panel and report section 6. |
+| **Self-hosted model option** | Set `LOCAL_LLM_BASE_URL` (Ollama, vLLM, LM Studio, any OpenAI-compatible server) and `LOCAL_LLM_MODEL`; add `SELF_HOSTED_ONLY=1` to make it the only provider and to keep embeddings local too, so nothing leaves your network. |
 
 ## Quick start
 
@@ -78,7 +97,7 @@ cp .env.example .env        # add ANTHROPIC_API_KEY / OPENAI_API_KEY / OPENROUTE
 
 streamlit run app/streamlit_app.py     # dashboard
 python -m secagents --json results.json  # CLI: writes security_report.md (add --docx r.docx --xlsx r.xlsx --pdf r.pdf)
-pytest                                  # 319 tests, no API keys needed
+pytest                                  # 399 tests, no API keys needed
 ```
 
 **Version:** the number lives in one place, the [`VERSION`](VERSION) file (for example `1.0.0`). Edit it and the browser tab, sidebar title, main title, page footer, sign-in page, report headers (Markdown, Word, Excel, PDF) and `python -m secagents --version` all show `Cyber Security AI Agent (v.1.0.0)` with the new number; a running app picks it up on its next rerun. `APP_VERSION` in the environment (or the Streamlit secrets) overrides the file. The `v.` prefix is `VERSION_PREFIX` in `secagents/version.py`.
@@ -206,6 +225,10 @@ secagents/
   session.py     Per-visitor router, folders, history and limits for public deployments
   gate.py        Sign in / Continue as guest front door;  identity.py  who the visitor is, access list
   limits.py      Token, rate and download limits kept in the database;  db.py  SQLite or Postgres
+  correlate.py   Supervisor join step: links findings per incident;  critic.py  uncertainty critic (confidence, caveats)
+  approvals.py   Human gate: proposed containment actions, decisions, audit trail, runbook (nothing is executed)
+  redact.py      Strips secrets and personal data before any model call;  incident_memory.py  past incidents in Chroma
+  review_ui.py   Dashboard panels for the critic, the correlated view and the gate
   knowledge_sync.py  Daily sync of CISA KEV / OSV / MITRE ATT&CK;  osv.py  OSV conversion and live lookup;  knowledge.py  last-updated info
 knowledge/       cves.jsonl, attack.jsonl, controls.jsonl, threat_feed.json
 samples/         demo logs, vulnerable app, system config, live_examples/ (paste-in attack lines)
@@ -257,6 +280,11 @@ Requirement: *an AI-powered cybersecurity system made of multiple agents that mo
 | 19 | **MCP** | ✅ | `mcp_server.py` (tools, resource, prompt) and `mcp_client.py`; the agent can route calls through it. No public `/mcp` URL on Streamlit Cloud: run the server locally or in Docker |
 | 20 | Deployed on a **public cloud** | 🟡 | Streamlit Community Cloud settings, guest / sign-in gate, per-user storage and limits, and Docker / CI are in the repo. The deployment itself, the sign-in provider and the Postgres database are yours to create; the Postgres path and real sign-in were not exercised against live services from here |
 | 21 | **Current vulnerability data** | ✅ | Daily sync from CISA KEV, OSV.dev and MITRE ATT&CK, live OSV lookup of scanned versions, last-updated line in the footer (see *Knowledge updates*) |
+| 22 | **Parallel specialists under a supervisor** | ✅ | `graph.py`: independent specialists run at the same time in waves (Log Monitor + Vulnerability Scanner, then Threat Intelligence, then Incident Response + Policy Checker), then correlation (`correlate.py`). Where one specialist needs another's output it waits |
+| 23 | **Uncertainty critic** | ✅ | `critic.py`: independent version re-check, confidence per finding, unverified exposures listed, caveats written into the model's summaries |
+| 24 | **Human gate before containment** | ✅ | `approvals.py` + Response tab: each containment/eradication action is approved, edited or rejected by a person, with an audit trail. The tool executes nothing; approved actions form a runbook a person runs |
+| 25 | **Guardrails**: strip secrets/PII, self-hosted model | ✅ | `redact.py` at the router and the embedding query; `LOCAL_LLM_BASE_URL` / `SELF_HOSTED_ONLY` |
+| 26 | **Memory of past incidents** | ✅ | `incident_memory.py`: Chroma collection filtered per owner; relearned from scan history after a restart |
 
 ✅ implemented · 🟡 partly implemented · ❌ not implemented
 

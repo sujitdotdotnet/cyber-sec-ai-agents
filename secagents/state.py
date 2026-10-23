@@ -24,4 +24,8 @@ class SecState(TypedDict, total=False):
     completed: Annotated[list[str], operator.add]
     trace: Annotated[list[dict[str, Any]], operator.add]
     next_agent: str
+    next_agents: list[str]
+    correlation: dict[str, Any]
+    critic: dict[str, Any]
+    containment_gate: dict[str, Any]
     report_md: str

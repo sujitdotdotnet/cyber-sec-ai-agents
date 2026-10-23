@@ -57,9 +57,19 @@ def save(result: dict, name: str, source: str) -> str:
         with store[0].transaction() as tx:
             tx.execute("INSERT INTO scans VALUES (?,?,?,?,?,?,?,?)", (scan_id, store[1], record["created_at"], record["name"], source,
                                                                    record["risk"], record["incidents"], json.dumps(record, default=str)))
-        return scan_id
-    (_dir() / f"{scan_id}.json").write_text(json.dumps(record, default=str))
+    else:
+        (_dir() / f"{scan_id}.json").write_text(json.dumps(record, default=str))
+    _remember_incidents(scan_id, result)
     return scan_id
+
+
+def _remember_incidents(scan_id: str, result: dict) -> None:
+    """Add the scan's incidents to the past-incident memory (a no-op for guests and for scans without incidents)."""
+    incidents = (result.get("incident_plan") or {}).get("incidents", [])
+    if incidents:
+        from . import incident_memory  # imported here: incident_memory itself reads the history
+
+        incident_memory.remember(scan_id, incidents)
 
 
 def list_scans() -> list[dict]:
@@ -106,6 +116,17 @@ def rename(scan_id: str, name: str) -> None:
     if store := _db_store():
         with store[0].transaction() as tx:
             tx.execute("UPDATE scans SET name=?, body=? WHERE id=? AND owner=?", (rec["name"], json.dumps(rec, default=str), scan_id, store[1]))
+        return
+    _path(scan_id).write_text(json.dumps(rec, default=str))
+
+
+def set_gate(scan_id: str, gate: dict) -> None:
+    """Store the human gate's decisions (and audit trail) inside the saved scan, so they survive a reload or a restart."""
+    rec = load(scan_id)
+    rec.setdefault("result", {})["containment_gate"] = gate
+    if store := _db_store():
+        with store[0].transaction() as tx:
+            tx.execute("UPDATE scans SET body=? WHERE id=? AND owner=?", (json.dumps(rec, default=str), scan_id, store[1]))
         return
     _path(scan_id).write_text(json.dumps(rec, default=str))
 

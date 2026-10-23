@@ -96,9 +96,10 @@ def test_pipeline_with_llm_responses(monkeypatch):
     monkeypatch.setattr(llm.LLMRouter, "complete", fake_complete)
     state = run(default_inputs())
     assert state["log_findings"]["narrative"] == "LLM text for log_monitor"
-    assert state["threat_intel"]["summary"] == "LLM text for threat_intel"
+    assert state["threat_intel"]["summary"].startswith("LLM text for threat_intel")  # the model's text, then the critic's caveats
+    assert "Review notes (uncertainty critic)" in state["threat_intel"]["summary"]
     assert any("graded" in t for t in state["threat_intel"]["rag_trace"])
-    assert state["incident_plan"]["briefing"] == "LLM briefing"
+    assert state["incident_plan"]["briefing"].startswith("LLM briefing") and "Review notes" in state["incident_plan"]["briefing"]
     assert any(s.get("source") == "llm" and s["action"] == "Revoke cloud tokens" for s in state["incident_plan"]["steps"])
     assert state["compliance"]["roadmap"] == "LLM text for policy_checker"
 

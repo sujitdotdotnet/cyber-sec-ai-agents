@@ -179,7 +179,7 @@ def test_search_survives_chroma_index_not_ready_and_ranks_identically(tmp_path, 
     monkeypatch.setattr("secagents.rag.store.time.sleep", lambda s: None)
     fallback = kb.search("cves", "log4j remote code execution jndi", k=3)
 
-    assert calls["n"] == 4  # retried before giving up on the index
+    assert calls["n"] == 8  # retried for a few seconds before giving up on the index
     assert [h["id"] for h in fallback] == [h["id"] for h in normal]
     assert [h["score"] for h in fallback] == pytest.approx([h["score"] for h in normal], abs=1e-3)
 

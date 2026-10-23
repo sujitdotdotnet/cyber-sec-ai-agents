@@ -20,6 +20,15 @@ def _csv(name: str) -> tuple[str, ...]:
     return tuple(p.strip().lower() for p in _env(name).split(",") if p.strip())
 
 
+def _provider_order() -> tuple[str, ...]:
+    if _env("SELF_HOSTED_ONLY").lower() in {"1", "true", "yes"}:
+        return ("local",)
+    order = [p.strip() for p in _env("LLM_PROVIDER_ORDER", "openrouter,anthropic,openai").split(",") if p.strip()]
+    if _env("LOCAL_LLM_BASE_URL") and "local" not in order:
+        order.append("local")  # configured, so offered as the last fallback (list it first in LLM_PROVIDER_ORDER to prefer it)
+    return tuple(order)
+
+
 @dataclass(frozen=True)
 class Settings:
     anthropic_api_key: str = field(default_factory=lambda: _env("ANTHROPIC_API_KEY"))
@@ -27,16 +36,22 @@ class Settings:
     openrouter_api_key: str = field(default_factory=lambda: _env("OPENROUTER_API_KEY"))
 
     # Order in which providers are tried; a provider without a key is skipped.
-    provider_order: tuple[str, ...] = field(
-        default_factory=lambda: tuple(
-            p.strip() for p in _env("LLM_PROVIDER_ORDER", "openrouter,anthropic,openai").split(",") if p.strip()
-        )
-    )
+    provider_order: tuple[str, ...] = field(default_factory=lambda: _provider_order())
+
+    # A model you host yourself (Ollama, vLLM, LM Studio, any OpenAI-compatible server): nothing leaves your network.
+    # SELF_HOSTED_ONLY=1 makes it the only provider and also turns off the OpenAI embeddings.
+    local_llm_base_url: str = field(default_factory=lambda: _env("LOCAL_LLM_BASE_URL"))  # e.g. http://localhost:11434/v1
+    local_llm_model: str = field(default_factory=lambda: _env("LOCAL_LLM_MODEL", "llama3.1"))
+    local_llm_api_key: str = field(default_factory=lambda: _env("LOCAL_LLM_API_KEY"))  # most local servers need none
+    self_hosted_only: bool = field(default_factory=lambda: _env("SELF_HOSTED_ONLY").lower() in {"1", "true", "yes"})
     claude_model: str = field(default_factory=lambda: _env("CLAUDE_MODEL", "claude-opus-5-5"))
     claude_effort: str = field(default_factory=lambda: _env("CLAUDE_EFFORT", "medium"))
     openai_model: str = field(default_factory=lambda: _env("OPENAI_MODEL", "gpt-4.1-mini"))
     openrouter_model: str = field(default_factory=lambda: _env("OPENROUTER_MODEL", "anthropic/claude-sonnet-4.5"))
     embedding_model: str = field(default_factory=lambda: _env("OPENAI_EMBEDDING_MODEL", "text-embedding-3-small"))
+
+    # Remove secrets and personal data (keys, passwords, e-mails, cards) from everything sent to a model. Leave on.
+    redact_before_model: bool = field(default_factory=lambda: _env("REDACT_BEFORE_MODEL", "1").lower() not in {"0", "false", "no"})
 
     # Set SECAGENTS_OFFLINE=1 to force rule-based mode (no LLM or embedding calls).
     offline: bool = field(default_factory=lambda: _env("SECAGENTS_OFFLINE") in {"1", "true", "yes"})

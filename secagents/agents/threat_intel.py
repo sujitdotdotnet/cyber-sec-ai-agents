@@ -88,7 +88,7 @@ def match_inventory(kb, inventory: list[dict[str, str]]) -> list[dict[str, Any]]
                     "fixed": _first_fix(cve["affected"], cve["fixed"], comp["version"]), "cvss": cve["cvss"], "severity": cve["severity"],
                     "source": comp.get("source", ""), "affected": True, "ecosystem": comp["ecosystem"],
                     "exploited_in_the_wild": cve["id"] in kev or any(a in kev for a in cve.get("aliases", [])),
-                    "osv_id": cve.get("osv_id", ""),
+                    "osv_id": cve.get("osv_id", ""), "affected_spec": cve["affected"],
                     "data_source": "OSV (synced)" if cve.get("source") == "OSV" else "Knowledge base",
                     "note": "Version-based match; distro backports may already carry the fix." if comp["ecosystem"] == "os" else "",
                 })
@@ -111,7 +111,7 @@ def merge_live(local: list[dict[str, Any]], live: list[dict[str, Any]], inventor
             "cve": rec["id"], "title": rec["title"], "package": rec["package"], "installed": rec["installed"],
             "fixed": _first_fix(rec["affected"], rec["fixed"], rec["installed"]), "cvss": rec["cvss"], "severity": rec["severity"],
             "source": source.get(rec["package"], ""), "affected": True, "ecosystem": "pypi",
-            "exploited_in_the_wild": bool(ids & kev), "osv_id": rec["osv_id"], "data_source": "OSV (live)", "note": "",
+            "exploited_in_the_wild": bool(ids & kev), "osv_id": rec["osv_id"], "affected_spec": rec["affected"], "data_source": "OSV (live)", "note": "",
         })
     return sorted(local + added, key=lambda m: m["cvss"], reverse=True)
 

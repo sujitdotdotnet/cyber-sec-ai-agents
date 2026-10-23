@@ -19,6 +19,7 @@ from typing import Any
 import chromadb
 
 from ..config import Settings, settings as default_settings
+from ..redact import scrub
 
 COLLECTIONS = {
     "cves": "cves.jsonl",
@@ -73,7 +74,7 @@ class KnowledgeBase:
     def __init__(self, cfg: Settings | None = None, persist: bool = True, api_key: str = ""):
         self.cfg = cfg or default_settings
         self.api_key = api_key.strip() or self.cfg.openai_api_key  # embeddings key; a typed one beats .env
-        self.backend = "openai" if (self.api_key and not self.cfg.offline) else "hash"
+        self.backend = "openai" if (self.api_key and not self.cfg.offline and not self.cfg.self_hosted_only) else "hash"
         if persist:
             self.cfg.chroma_dir.mkdir(parents=True, exist_ok=True)
             self.client = chromadb.PersistentClient(path=str(self.cfg.chroma_dir))
@@ -97,7 +98,7 @@ class KnowledgeBase:
         if key == self.api_key:
             return False
         self.api_key, self._openai = key, None
-        self.backend = "openai" if (key and not self.cfg.offline) else "hash"
+        self.backend = "openai" if (key and not self.cfg.offline and not self.cfg.self_hosted_only) else "hash"
         if self.backend == "openai":
             self.embed(["probe"])  # falls back to local embeddings if this key does not work
         self.ingest()
@@ -174,13 +175,44 @@ class KnowledgeBase:
                     embeddings=self.embed([texts[i] for i in batch]),
                     metadatas=[{"kind": kind, "h": stamp[i]} for i in batch],
                 )
+            if todo:
+                self._wait_ready(col)  # a freshly built or changed index answers queries only once Chroma has written it
+
+    # ---- past incidents (memory of this team's own history, one owner at a time) ----------------------
+    def _incident_collection(self):
+        return self.client.get_or_create_collection(name=f"incidents_{self.backend}", metadata={"hnsw:space": "cosine"})
+
+    def add_incidents(self, owner: str, scan_id: str, incidents: list[dict[str, Any]]) -> int:
+        """Remember a scan's incidents under ``owner``. Safe to repeat: the same incident is overwritten, not duplicated."""
+        rows = [i for i in incidents if i.get("id")]
+        if not rows:
+            return 0
+        texts = [scrub(f"{i.get('title', '')}. {i.get('summary', '')}")[0] for i in rows]
+        self._incident_collection().upsert(
+            ids=[f"{owner}|{scan_id}|{i['id']}" for i in rows], documents=texts, embeddings=self.embed(texts),
+            metadatas=[{"owner": owner, "scan": scan_id, "incident": i["id"], "title": str(i.get("title", ""))[:200],
+                        "priority": str(i.get("priority", "")), "summary": texts[n][:400]} for n, i in enumerate(rows)],
+        )
+        return len(rows)
+
+    def similar_incidents(self, owner: str, query: str, k: int = 3) -> list[dict[str, Any]]:
+        """The ``owner``'s own past incidents closest to ``query``. Nobody else's are ever returned."""
+        col = self._incident_collection()
+        if not col.get(where={"owner": owner}, limit=1, include=[])["ids"]:
+            return []
+        q = self.embed([scrub(query)[0]])
+        res = col.query(query_embeddings=q, n_results=k, where={"owner": owner})
+        return [{"scan": m["scan"], "incident": m["incident"], "title": m["title"], "priority": m["priority"], "summary": m["summary"], "score": round(1 - d, 3)}
+                for m, d in zip(res["metadatas"][0], res["distances"][0])]
 
     # ---- search ------------------------------------------------------------
     def search(self, kind: str, query: str, k: int = 4) -> list[dict[str, Any]]:
         col = self._collection(kind)
+        if self.cfg.redact_before_model:  # a query built from log evidence goes to the embedding service: no secrets in it
+            query = scrub(query)[0]
         q = self.embed([query])  # may switch the backend (bad key), so fetch the collection afterwards
         col = self._collection(kind)
-        ids, dists, docs = self._query(col, q, k + PINNED_POOL)
+        ids, dists, docs = self._query(col, q, k + PINNED_POOL, query_text=query)
         hits = [
             {"id": i, "score": round(1 - d + (PINNED_BONUS if i in self.pinned.get(kind, ()) else 0), 3), "text": t, "record": self.records[kind][i]}
             for i, d, t in zip(ids, dists, docs)
@@ -188,13 +220,14 @@ class KnowledgeBase:
         return sorted(hits, key=lambda h: -h["score"])[:k]
 
     @staticmethod
-    def _query(col, query_embedding: list[list[float]], k: int, attempts: int = 4) -> tuple[list, list, list]:
+    def _query(col, query_embedding: list[list[float]], k: int, attempts: int = 8, query_text: str = "") -> tuple[list, list, list]:
         """Chroma query, tolerant of its background index build.
 
-        Right after a collection is created Chroma can raise "Error creating hnsw segment reader: Nothing found
-        on disk" until the index has been written, and it depends on timing and threads (LangGraph runs each agent
-        in a worker thread). Retry briefly, then rank the stored vectors exactly: the knowledge base is a few dozen
-        records, so the answer is the same and an agent run never fails on it.
+        Right after a collection is created or changed Chroma can raise "Error creating hnsw segment reader: Nothing
+        found on disk" until the index has been written, and it depends on timing and threads (LangGraph runs
+        agents in worker threads). Retry for a few seconds; then rank the stored vectors exactly; and if even
+        reading them fails, rank by word overlap with the stored text (which needs no vector index). A search
+        therefore always answers, and an agent run never fails on it.
         """
         for attempt in range(attempts):
             try:
@@ -202,18 +235,36 @@ class KnowledgeBase:
                 return res["ids"][0], res["distances"][0], res["documents"][0]
             except Exception:  # noqa: BLE001 - chromadb raises its own InternalError types
                 if attempt < attempts - 1:
-                    time.sleep(0.15 * (attempt + 1))
-        data = col.get(include=["embeddings", "documents"])
-        q = query_embedding[0]
-        qn = math.sqrt(sum(x * x for x in q)) or 1.0
-        scored = []
-        for doc_id, vec, doc in zip(data["ids"], data["embeddings"], data["documents"]):
-            vn = math.sqrt(sum(float(x) * float(x) for x in vec)) or 1.0
-            cos = sum(a * float(b) for a, b in zip(q, vec)) / (qn * vn)
-            scored.append((1 - cos, doc_id, doc))  # cosine distance, like the index
+                    time.sleep(min(0.15 * (attempt + 1), 0.6))
+        try:
+            data = col.get(include=["embeddings", "documents"])
+            q = query_embedding[0]
+            qn = math.sqrt(sum(x * x for x in q)) or 1.0
+            scored = []
+            for doc_id, vec, doc in zip(data["ids"], data["embeddings"], data["documents"]):
+                vn = math.sqrt(sum(float(x) * float(x) for x in vec)) or 1.0
+                cos = sum(a * float(b) for a, b in zip(q, vec)) / (qn * vn)
+                scored.append((1 - cos, doc_id, doc))  # cosine distance, like the index
+        except Exception:  # noqa: BLE001 - the vector segment is not readable yet: use the text alone
+            data = col.get(include=["documents"])
+            wanted = set(_TOKEN.findall(query_text.lower()))
+            scored = []
+            for doc_id, doc in zip(data["ids"], data["documents"]):
+                words = set(_TOKEN.findall(doc.lower()))
+                scored.append((1 - len(wanted & words) / (len(wanted) or 1), doc_id, doc))
         scored.sort(key=lambda t: t[0])
         top = scored[:k]
         return [t[1] for t in top], [t[0] for t in top], [t[2] for t in top]
+
+    def _wait_ready(self, col, tries: int = 40, delay: float = 0.25) -> None:
+        """After the index changed, wait (up to ~10 s) until Chroma can actually answer a query."""
+        probe = self.embed(["readiness probe"])
+        for _ in range(tries):
+            try:
+                col.query(query_embeddings=probe, n_results=1)
+                return
+            except Exception:  # noqa: BLE001
+                time.sleep(delay)
 
     def get(self, kind: str, doc_id: str) -> dict[str, Any] | None:
         return self.records.get(kind, {}).get(doc_id)
@@ -246,4 +297,4 @@ def embedding_backend() -> str:
     key = _typed_key or default_settings.openai_api_key
     if _kb is not None and key == _kb.api_key:
         return _kb.backend  # actual, including a fallback to local after a failed key
-    return "openai" if (key and not default_settings.offline) else "hash"  # what the next get_kb() will switch to
+    return "openai" if (key and not default_settings.offline and not default_settings.self_hosted_only) else "hash"  # what the next get_kb() will switch to

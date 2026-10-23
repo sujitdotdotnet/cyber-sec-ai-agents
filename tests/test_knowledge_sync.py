@@ -498,3 +498,23 @@ def test_the_top_knowledge_line_is_white():
     css = " ".join(m.value for m in at.markdown if ".sa-knowledge" in m.value)
     rule = css[css.index(".sa-knowledge{"):].split("}")[0]
     assert "color:#fff" in rule and "opacity" not in rule  # pure white, not dimmed
+
+
+def test_a_search_still_answers_when_the_vector_index_cannot_be_read(kb_dir, monkeypatch):
+    kb = make_kb(kb_dir)
+    monkeypatch.setattr("secagents.rag.store.time", types.SimpleNamespace(sleep=lambda s: None))
+    real_get = type(kb._collection("attack")).get
+
+    class Broken:
+        """A collection whose vector index is not ready: queries fail, and so does reading vectors, but text is readable."""
+
+        def query(self, **kw):
+            raise RuntimeError("Error creating hnsw segment reader: Nothing found on disk")
+
+        def get(self, **kw):
+            if "embeddings" in kw.get("include", []):
+                raise RuntimeError("Nothing found on disk")
+            return real_get(kb._collection("attack"), **kw)
+
+    ids, dists, docs = kb._query(Broken(), [[0.0] * 512], 3, query_text="brute force password guessing ssh")
+    assert len(ids) == 3 and any("Brute Force" in d for d in docs) and dists == sorted(dists)  # ranked by word overlap, best first

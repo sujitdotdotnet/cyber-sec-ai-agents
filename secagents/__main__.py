@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import json
 import logging
+import sys
 from pathlib import Path
 
 from .exporters import export
@@ -26,6 +27,9 @@ def main() -> None:
     for fmt, label in (("docx", "Word"), ("xlsx", "Excel"), ("pdf", "PDF")):
         ap.add_argument(f"--{fmt}", help=f"Also write the report as a {label} file")
     args = ap.parse_args()
+    for stream_ in (sys.stdout, sys.stderr):  # the report and trace contain arrows and accents; a Windows console must not crash on them
+        if hasattr(stream_, "reconfigure"):
+            stream_.reconfigure(encoding="utf-8", errors="replace")
     logging.basicConfig(level=logging.WARNING, format="%(levelname)s %(name)s: %(message)s")
 
     inputs = default_inputs()
@@ -42,14 +46,14 @@ def main() -> None:
             print(f"[{t['ts']}] {t['agent']:<18} {t['message']}")
         state.update({k: v for k, v in update.items() if k not in ("trace", "completed")})
 
-    Path(args.out).write_text(state.get("report_md", ""))
+    Path(args.out).write_text(state.get("report_md", ""), encoding="utf-8")
     print(f"\nReport written to {args.out}")
     for fmt in ("docx", "xlsx", "pdf"):
         if getattr(args, fmt):
             Path(getattr(args, fmt)).write_bytes(export(fmt, state, {}))
             print(f"{fmt.upper()} report written to {getattr(args, fmt)}")
     if args.json_out:
-        Path(args.json_out).write_text(json.dumps(state, indent=2, default=str))
+        Path(args.json_out).write_text(json.dumps(state, indent=2, default=str), encoding="utf-8")
         print(f"Results written to {args.json_out}")
 
 

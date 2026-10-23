@@ -10,6 +10,7 @@ from __future__ import annotations
 import json
 from typing import Any
 
+from .. import incident_memory
 from ..llm import get_router
 from .base import trace_event
 from .threat_intel import version_key
@@ -135,12 +136,14 @@ def run_incident_response(state: dict[str, Any]) -> dict[str, Any]:
     logs, intel, vulns = state.get("log_findings", {}) or {}, state.get("threat_intel", {}) or {}, state.get("vuln_findings", {}) or {}
     incidents, steps = build_incidents(logs, intel, vulns)
     router = get_router()
+    for inc_id, matches in incident_memory.similar(incidents).items():  # what this team has dealt with before
+        next(i for i in incidents if i["id"] == inc_id)["similar_past"] = matches
 
     briefing = None
     if incidents:
         resp = router.complete_json(
             IR_SYSTEM,
-            "Incidents:\n" + json.dumps(incidents, indent=1)
+            "Incidents (similar_past, where present, lists this team's earlier incidents of the same kind):\n" + json.dumps(incidents, indent=1)
             + "\n\nBaseline steps:\n" + "\n".join(f"- [{s['phase']}] {s['action']}" for s in steps)
             + "\n\nATT&CK mitigations:\n" + "\n".join(f"- {t['technique']} {t['name']}: {t['mitigation']}" for t in intel.get("techniques", []))
             + '\n\nReturn {"briefing": "markdown executive briefing, under 200 words, covering impact, what to do in the next hour, and decisions needed", '
