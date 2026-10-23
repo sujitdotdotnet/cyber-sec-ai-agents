@@ -128,3 +128,46 @@ def test_postgres_connection_is_reused_and_replaced_after_it_dies(fake_pg):
     with db.transaction() as tx:  # the next call opens a fresh connection instead of failing forever
         tx.execute("SELECT 1")
     assert len(fake_pg.connects) == 2
+
+
+def test_urls_with_placeholder_brackets_or_at_signs_in_the_password_parse_instead_of_crashing():
+    from secagents.db import parse_pg_url
+
+    p = parse_pg_url("postgresql://postgres:[YOUR-PASSWORD]@db.abc.supabase.co:5432/postgres")
+    assert (p["user"], p["password"], p["host"], p["port"], p["database"]) == ("postgres", "[YOUR-PASSWORD]", "db.abc.supabase.co", 5432, "postgres")
+    q = parse_pg_url("postgresql://u:p@ss@h.neon.tech/db?sslmode=require")
+    assert (q["password"], q["host"], q["ssl"]) == ("p@ss", "h.neon.tech", True)
+    assert parse_pg_url("postgres://u:p@h/db?sslmode=disable")["ssl"] is False
+    with pytest.raises(ValueError, match="not a valid"):
+        parse_pg_url("postgresql://no-at-sign-here")
+
+
+def test_redacting_hides_the_whole_password_even_with_an_at_sign():
+    assert "ss" not in redact_url("postgresql://u:p@ss@h.neon.tech/db").split("@")[0]
+    assert redact_url("postgresql://u:p@ss@h.neon.tech/db") == "postgresql://u:***@h.neon.tech/db"
+
+
+def test_a_broken_database_url_falls_back_to_local_storage_and_says_why(tmp_path, monkeypatch):
+    from dataclasses import replace
+
+    from secagents import session
+    from secagents.config import settings
+
+    monkeypatch.setattr(session, "_shared", {"db": None, "error": "", "at": 0.0})
+    monkeypatch.setattr(session, "settings", replace(settings, database_url="postgresql://u:[PASSWORD]@no-such-host.invalid/db",
+                                                     memory_db=tmp_path / "local.db"))
+    db = session.shared_db()
+    assert not db.postgres and db.target == str(tmp_path / "local.db")  # the site still works
+    assert session.db_error() and "PASSWORD" not in session.db_error()  # and the reason is available, without the password
+    assert session.shared_db() is db  # not retried on every call
+
+
+def test_without_a_database_url_there_is_no_error(tmp_path, monkeypatch):
+    from dataclasses import replace
+
+    from secagents import session
+    from secagents.config import settings
+
+    monkeypatch.setattr(session, "_shared", {"db": None, "error": "", "at": 0.0})
+    monkeypatch.setattr(session, "settings", replace(settings, database_url="", memory_db=tmp_path / "local.db"))
+    assert not session.shared_db().postgres and session.db_error() == ""

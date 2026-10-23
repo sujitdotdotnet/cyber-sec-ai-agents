@@ -16,6 +16,7 @@ from .config import settings
 from .llm import get_router
 from .mcp_client import McpHub
 from .memory import Memory
+from .session import shared_db
 from .tools import TOOLS, ToolContext
 
 SUGGESTIONS = [
@@ -40,7 +41,7 @@ def _memory() -> Memory:
     ss = st.session_state
     if "agent_memory" not in ss:
         visitor = ss.get("visitor") if settings.public else None
-        ss["agent_memory"] = Memory(":memory:") if visitor is not None and visitor.identity.is_guest else Memory(settings.database_url or settings.memory_db)
+        ss["agent_memory"] = Memory(":memory:") if visitor is not None and visitor.identity.is_guest else Memory(shared_db())
     return ss["agent_memory"]
 
 

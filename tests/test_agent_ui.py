@@ -156,7 +156,10 @@ def signed_in(monkeypatch, email="me@example.com", sub="sub-1", verified=True):
     monkeypatch.setattr(gate, "login_state", lambda: gate.LoginState(True, sub, email, "Me", verified))
 
 
-def test_public_site_asks_for_guest_or_sign_in_before_anything_else(model):
+def test_public_site_asks_for_guest_or_sign_in_before_anything_else(model, monkeypatch):
+    from secagents import gate
+
+    monkeypatch.setattr(gate, "auth_configured", lambda: False)  # whatever .streamlit/secrets.toml says on this machine
     at = public_start()
     assert not at.exception and at.button(key="gate-guest")
     assert not at.chat_input and not [s for s in at.selectbox if s.key == "provider-0"]  # nothing of the app is reachable yet

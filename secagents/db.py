@@ -13,7 +13,7 @@ import threading
 from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, Iterator
-from urllib.parse import parse_qs, unquote, urlparse
+from urllib.parse import parse_qs, unquote
 
 _instances: dict[str, "Db"] = {}
 _instances_lock = threading.Lock()
@@ -61,13 +61,10 @@ class Db:
 
             import pg8000.dbapi
 
-            u = urlparse(self.target)
-            query = parse_qs(u.query)
-            wants_ssl = query.get("sslmode", ["require"])[0] not in ("disable", "allow", "prefer")
+            p = parse_pg_url(self.target)
             conn = pg8000.dbapi.connect(
-                user=unquote(u.username or ""), password=unquote(u.password or ""), host=u.hostname or "localhost",
-                port=u.port or 5432, database=(u.path or "/").lstrip("/") or None,
-                ssl_context=ssl.create_default_context() if wants_ssl else None, timeout=15,
+                user=p["user"], password=p["password"], host=p["host"], port=p["port"], database=p["database"],
+                ssl_context=ssl.create_default_context() if p["ssl"] else None, timeout=15,
             )
             return conn
         conn = sqlite3.connect(self.target, check_same_thread=False, timeout=10)
@@ -142,6 +139,21 @@ class Tx:
             self.execute(sql, r)
 
 
+_PG_URL = re.compile(r"^postgres(?:ql)?://(?P<user>[^:@/]*)(?::(?P<password>.*))?@(?P<host>[^:/?@]+)(?::(?P<port>\d+))?(?:/(?P<db>[^?]*))?(?:\?(?P<query>.*))?$", re.S)
+
+
+def parse_pg_url(url: str) -> dict[str, Any]:
+    """Split a Postgres URL into connection parts. More forgiving than urlparse: the password may contain ``@``, ``[`` or
+    ``]`` (a copied-in placeholder like ``[YOUR-PASSWORD]`` must produce a login error, not a parser crash)."""
+    m = _PG_URL.match(url.strip())
+    if not m:
+        raise ValueError("DATABASE_URL is not a valid postgresql://user:password@host:port/database URL")
+    query = parse_qs(m["query"] or "")
+    return {"user": unquote(m["user"] or ""), "password": unquote(m["password"] or ""), "host": m["host"],
+            "port": int(m["port"] or 5432), "database": (m["db"] or "") or None,
+            "ssl": query.get("sslmode", ["require"])[0] not in ("disable", "allow", "prefer")}
+
+
 def redact_url(url: str) -> str:
     """A database URL with the password hidden, safe to show in an error or caption."""
-    return re.sub(r"(://[^:/@]+:)[^@]+@", r"\1***@", url)
+    return re.sub(r"(://[^:/]*:).*@", r"\1***@", url)

@@ -18,7 +18,7 @@ from pathlib import Path
 from typing import Any
 
 from .config import settings
-from .db import Db, open_db
+from .db import Db, open_db, redact_url
 from .identity import Identity, guest
 from .limits import Allowance, Usage, allowance_for
 
@@ -33,6 +33,40 @@ STALE_AFTER = 24 * 3600  # per-session folders older than this are removed
 
 def current_router() -> Any:
     return _router.get()
+
+
+_shared: dict[str, Any] = {"db": None, "error": "", "at": 0.0}
+RETRY_DB_AFTER = 60.0
+
+
+def shared_db() -> Db:
+    """The app's database: Postgres from DATABASE_URL when it works, else the local SQLite file.
+
+    A wrong or unreachable DATABASE_URL must not take the whole site down, so it falls back to local storage (which is
+    temporary on a free host) and ``db_error()`` says why, for the sidebar. A failed Postgres is retried every minute.
+    """
+    now, c = time.time(), _shared
+    want = (settings.database_url, str(settings.memory_db))
+    if c.get("want") != want:  # the configuration changed (tests, or a settings reload): decide again
+        c.update(db=None, error="", at=0.0, want=want)
+    if c["db"] is not None and (not c["error"] or now - c["at"] < RETRY_DB_AFTER):
+        return c["db"]
+    if settings.database_url:
+        try:
+            db = open_db(settings.database_url)
+            with db.transaction() as tx:
+                tx.execute("SELECT 1")
+            c.update(db=db, error="", at=now)
+            return db
+        except Exception as exc:  # noqa: BLE001 - bad URL, wrong password, network: all mean "use local storage for now"
+            c["error"] = f"{type(exc).__name__}: {redact_url(str(exc))[:200]}"
+    c.update(db=open_db(settings.memory_db), at=now)
+    return c["db"]
+
+
+def db_error() -> str:
+    """Why DATABASE_URL could not be used (empty when it works or none is configured)."""
+    return _shared["error"]
 
 
 def live_override() -> Path | None:
@@ -82,7 +116,7 @@ def new_session(router: Any, identity: Identity | None = None, base: Path | None
     """A fresh visitor session with its own folders under ``base`` (default: .sessions next to the history)."""
     identity = identity or guest()
     base = base or settings.history_dir.parent / ".sessions"
-    db = db or open_db(settings.database_url or settings.memory_db)
+    db = db or shared_db()
     sid = uuid.uuid4().hex[:16]
     _sweep(base)
     usage = Usage(db)

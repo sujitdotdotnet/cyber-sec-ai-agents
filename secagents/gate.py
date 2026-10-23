@@ -10,7 +10,7 @@ from dataclasses import dataclass
 
 import streamlit as st
 
-from . import identity as ident
+from . import identity as ident, session
 from .config import settings
 
 
@@ -106,6 +106,9 @@ def sidebar_box(visitor) -> None:
         else:
             st.markdown(f"👤 **{who.label}**")
             st.button("Log out", on_click=st.logout, key="side-logout", use_container_width=True)
+        if session.db_error():
+            st.warning("Database unavailable, using temporary storage: your data will not survive a restart. "
+                       f"({session.db_error()})", icon="🗄️")
         used = allow.daily_used()
         st.caption(f"Shared-key tokens today: {used:,} / {allow.daily_cap:,}"
                    + (f" · this session {allow.session_used:,} / {allow.session_cap:,}" if allow.session_cap is not None else ""))
