@@ -12,6 +12,7 @@ import streamlit as st
 
 from . import identity as ident, session
 from .config import settings
+from .about import ABOUT_MD, ABOUT_TITLE
 from .version import app_title
 
 
@@ -62,7 +63,9 @@ def _guest() -> None:
 
 
 def footer() -> None:
-    """The line at the bottom of every page: the app's name and version."""
+    """The bottom of every page: a collapsed About panel, then the app's name and version."""
+    with st.expander(ABOUT_TITLE, expanded=False):
+        st.markdown(ABOUT_MD)
     st.divider()
     st.caption(f"🛡️ {app_title()}")
 

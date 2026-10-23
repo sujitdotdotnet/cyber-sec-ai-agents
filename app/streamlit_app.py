@@ -195,9 +195,8 @@ def sev(s: str) -> str:
 
 
 def show_footer() -> None:
-    """The bottom line of every page: the app's name and version (from the VERSION file)."""
-    st.divider()
-    st.caption(f"🛡️ {app_title()}")
+    """The bottom of every page: the collapsed About panel, then the app's name and version (from the VERSION file)."""
+    gate.footer()
 
 
 def reset_app() -> None:

@@ -21,7 +21,7 @@ The **Streamlit** dashboard has a Live scan that follows log files as they grow 
 
 **Where it runs:** 
 
-The dashboard runs on a long-lived **Streamlit** host and the project has 74 tests.
+The dashboard runs on a long-lived **Streamlit** host, and the project ships with an automated test suite.
 
 
 
