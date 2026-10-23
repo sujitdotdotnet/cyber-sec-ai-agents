@@ -445,13 +445,13 @@ with st.sidebar:
             help="Pre-filled from the folder's .gitignore and .ignore files, so everything listed is skipped. "
                  "Add your own folders (names, relative paths or wildcards) or remove entries to scan them.",
         )
-        st.markdown("**Or upload individual files**")
         tmp = Path(tempfile.mkdtemp(prefix="secagents_"))
-        logs = st.file_uploader("Log files (auth.log, access.log, firewall.log)", accept_multiple_files=True, key=f"logs-{nonce}")
-        code = st.file_uploader("Python source files", type=["py"], accept_multiple_files=True, key=f"code-{nonce}")
-        reqs = st.file_uploader("requirements.txt", type=["txt"], key=f"reqs-{nonce}")
-        docker = st.file_uploader("Dockerfile", key=f"docker-{nonce}")
-        cfg = st.file_uploader("System config (YAML)", type=["yaml", "yml"], key=f"cfg-{nonce}")
+        with st.expander("Upload Custom Files", expanded=False):
+            logs = st.file_uploader("Log files (auth.log, access.log, firewall.log)", accept_multiple_files=True, key=f"logs-{nonce}")
+            code = st.file_uploader("Python source files", type=["py"], accept_multiple_files=True, key=f"code-{nonce}")
+            reqs = st.file_uploader("requirements.txt", type=["txt"], key=f"reqs-{nonce}")
+            docker = st.file_uploader("Dockerfile", key=f"docker-{nonce}")
+            cfg = st.file_uploader("System config (YAML)", type=["yaml", "yml"], key=f"cfg-{nonce}")
         (tmp / "code").mkdir()
         inputs = {
             "log_paths": save_uploads(logs, tmp),

@@ -59,3 +59,14 @@ def test_the_panel_is_on_the_sign_in_page_too():
         assert len(panel(at)) == 1 and panel(at)[0].proto.expanded is False
     finally:
         object.__setattr__(settings, "public", False)
+
+
+def test_all_the_file_uploads_are_in_one_collapsed_container():
+    at = AppTest.from_file(APP, default_timeout=120).run()
+    at.radio[0].set_value("Upload my own files").run()
+    assert not at.exception
+    [box] = [e for e in at.expander if e.label == "Upload Custom Files"]
+    assert box.proto.expanded is False
+    inside = [u.label for u in box.get("file_uploader")]
+    assert inside == ["Log files (auth.log, access.log, firewall.log)", "Python source files", "requirements.txt", "Dockerfile", "System config (YAML)"]
+    assert sorted(u.key for u in at.sidebar.get("file_uploader")) == sorted(f"{k}-0" for k in ("logs", "code", "reqs", "docker", "cfg"))
