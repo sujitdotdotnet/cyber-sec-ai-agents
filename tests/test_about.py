@@ -1,4 +1,4 @@
-"""The About panel above the footer: collapsed by default, same text as the README, on every page."""
+"""The About panel below the footer line: collapsed by default, same text as the README, on every page."""
 
 import re
 from pathlib import Path
@@ -33,13 +33,16 @@ def panel(at):
     return [e for e in at.expander if e.label == ABOUT_TITLE]
 
 
-def test_the_panel_is_collapsed_by_default_and_sits_above_the_footer():
+def test_the_panel_is_collapsed_by_default_and_sits_below_the_footer_line():
     at = AppTest.from_file(APP, default_timeout=120).run()
     assert not at.exception
     [p] = panel(at)
     assert p.proto.expanded is False
     assert "What it is:" in " ".join(m.value for m in p.markdown) and "Agent | What it does" in " ".join(m.value for m in p.markdown)
     assert any("Cyber Security AI Agent (v." in c.value for c in at.caption)  # the footer line is still there
+    # document order: the footer caption comes before the About panel (the last two things on the page)
+    order = [e.type for e in at.main if e.type in ("caption", "expander")]
+    assert order[-2:] == ["caption", "expander"]
 
 
 def test_the_panel_is_there_after_an_assessment_too():

@@ -74,11 +74,11 @@ SIGNIN_CSS = (
 
 
 def footer() -> None:
-    """The bottom of every page: a collapsed About panel, then the app's name and version."""
-    with st.expander(ABOUT_TITLE, expanded=False):
-        st.markdown(ABOUT_MD)
+    """The bottom of every page: the app's name and version, then the collapsed About panel below it."""
     st.divider()
     st.caption(f"🛡️ {app_title()}")
+    with st.expander(ABOUT_TITLE, expanded=False):
+        st.markdown(ABOUT_MD)
 
 
 def resolve() -> ident.Identity:
