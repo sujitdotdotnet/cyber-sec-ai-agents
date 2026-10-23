@@ -96,8 +96,8 @@ def resolve() -> ident.Identity:
 
 
 def sidebar_box(visitor) -> None:
-    """Who is signed in, what their allowance is, and the sign in / log out button."""
-    who, allow = visitor.identity, visitor.allowance
+    """Who is signed in, and the sign in / log out button."""
+    who = visitor.identity
     with st.container(border=True):
         if who.is_guest:
             st.markdown("👤 **Guest** · limited, nothing is saved")
@@ -109,6 +109,5 @@ def sidebar_box(visitor) -> None:
         if session.db_error():
             st.warning("Database unavailable, using temporary storage: your data will not survive a restart. "
                        f"({session.db_error()})", icon="🗄️")
-        used = allow.daily_used()
-        st.caption(f"Shared-key tokens today: {used:,} / {allow.daily_cap:,}"
-                   + (f" · this session {allow.session_used:,} / {allow.session_cap:,}" if allow.session_cap is not None else ""))
+        st.caption("🔑 Bring Your Own Key (BYOK)", help="Paste your own API key in the box below: it is used instead of the shared key "
+                                                       "and is never limited or counted.")

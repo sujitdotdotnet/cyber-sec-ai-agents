@@ -257,6 +257,6 @@ def test_the_download_limit_is_enforced_for_github_links(model, monkeypatch):
     assert any("Download limit" in e.value for e in at.error) and calls == []
 
 
-def test_the_shared_key_budget_is_shown_in_the_sidebar(model):
+def test_the_sidebar_says_bring_your_own_key_instead_of_showing_a_counter(model):
     at = as_guest()
-    assert "Shared-key tokens today" in texts(at)
+    assert "Bring Your Own Key (BYOK)" in texts(at) and "Shared-key tokens today" not in texts(at)
