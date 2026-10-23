@@ -47,7 +47,7 @@ def _drop_stale_secagents_modules() -> None:
 
 def _import_secagents() -> dict:
     """Every import from the secagents package, together, so they can be retried as one unit."""
-    from secagents import agent_ui, history
+    from secagents import agent_ui, gate, history
     from secagents.config import settings
     from secagents.exporters import MIME as EXPORT_MIME, export
     from secagents.graph import default_inputs, stream
@@ -78,11 +78,16 @@ except ImportError:
 
 st.set_page_config(page_title="Cyber Security AI Agent", page_icon="🛡️", layout="wide")
 
-# Public deployment: every visitor gets their own router (typed API keys), live-log folder, scan history and budget,
-# because all visitors share one Python process. Locally nothing changes: one shared router and the configured folders.
+# Public deployment: visitors sign in or continue as guests, and each gets their own router (typed API keys), live-log
+# folder, scan history and spending limits, because all visitors share one Python process. Locally nothing changes:
+# no gate, one shared router and the configured folders.
 if settings.public:
-    if "visitor" not in st.session_state:
-        st.session_state["visitor"] = new_session(LLMRouter())
+    who = gate.resolve()  # shows the sign-in / guest page and stops until the visitor chooses
+    visitor = st.session_state.get("visitor")
+    if visitor is None or visitor.identity != who:  # first visit, or signed in / out: start clean for the new identity
+        for stale in ("agent_obj", "agent_sig", "agent_thread", "agent_memory", "result", "scan", "chat", "live"):
+            st.session_state.pop(stale, None)
+        st.session_state["visitor"] = new_session(LLMRouter(), identity=who)
     activate_session(st.session_state["visitor"])
 
 
@@ -320,6 +325,8 @@ with st.sidebar:
     st.button("↺ Reset", on_click=reset_app, use_container_width=True,
               help="Clear the current results, chat and inputs. Scan history is kept.")
     st.caption("Five AI agents for detection, intel, scanning, response and compliance. Scan your GitHub Repositories, own logs, code and config files now.")
+    if settings.public:
+        gate.sidebar_box(st.session_state["visitor"])
     router = get_router()
     options = list(settings.provider_order)
     router.preferred = st.selectbox(
@@ -407,6 +414,10 @@ with st.sidebar:
                 st.error("Folders on the server and network shares are disabled on this public site. "
                          "Use a GitHub or Google Drive link, or upload files.")
                 source_kind = ""
+            if settings.public and source_kind in ("github", "gdrive"):  # each fetch costs bandwidth and disk: limited per day
+                if note := st.session_state["visitor"].allowance.download(repo_folder.strip()):
+                    st.error(note)
+                    source_kind = ""
         gh_token = ""
         if source_kind == "github":
             gh_token = st.text_input("GitHub token (private repositories only)", type="password", key=f"ghtoken-{nonce}",

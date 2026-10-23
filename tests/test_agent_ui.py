@@ -138,15 +138,122 @@ def test_the_agent_run_assessment_becomes_the_dashboard_result(model):
     assert any(t.label == "Overview" for t in at.tabs)  # the full dashboard is now showing
 
 
-def test_public_mode_gives_each_visitor_their_own_router_and_hides_server_paths(model):
+# ---- public deployment: guest or sign in --------------------------------------------------------------
+def public_start() -> AppTest:
     object.__setattr__(settings, "public", True)
-    one, two = start(), start()
+    return start()
+
+
+def as_guest() -> AppTest:
+    at = public_start()
+    at.button(key="gate-guest").click().run()
+    return at
+
+
+def signed_in(monkeypatch, email="me@example.com", sub="sub-1", verified=True):
+    from secagents import gate
+
+    monkeypatch.setattr(gate, "login_state", lambda: gate.LoginState(True, sub, email, "Me", verified))
+
+
+def test_public_site_asks_for_guest_or_sign_in_before_anything_else(model):
+    at = public_start()
+    assert not at.exception and at.button(key="gate-guest")
+    assert not at.chat_input and not [s for s in at.selectbox if s.key == "provider-0"]  # nothing of the app is reachable yet
+    assert any("Sign-in is not set up" in i.value for i in at.info)  # no [auth] secrets: guest only, and it says so
+
+
+def test_sign_in_button_appears_once_login_is_configured(model, monkeypatch):
+    from secagents import gate
+
+    monkeypatch.setattr(gate, "auth_configured", lambda: True)
+    at = public_start()
+    assert at.button(key="gate-signin") and at.button(key="gate-guest")
+
+
+def test_guest_gets_a_private_session_with_server_paths_hidden(model):
+    one, two = as_guest(), as_guest()
     assert not one.exception
-    r1, r2 = one.session_state["visitor"].router, two.session_state["visitor"].router
-    assert r1 is not r2 and r1.budget is not None
-    assert one.session_state["visitor"].workspace != two.session_state["visitor"].workspace
+    v1, v2 = one.session_state["visitor"], two.session_state["visitor"]
+    assert v1.identity.is_guest and v1.router is not v2.router and v1.workspace != v2.workspace
+    assert v1.router.budget is v1.allowance and v1.scan_db is None
     one.radio[0].set_value("Upload my own files").run()
     assert not [b for b in one.button if "Browse" in b.label]
     assert not [c for c in one.checkbox if "automatically" in c.label]  # no auto-approve for strangers
     one.text_input(key="repo-0").set_value(r"C:\Windows").run()
     assert any("disabled on this public site" in e.value for e in one.error)
+    assert "Guest" in texts(one)
+
+
+def test_guest_chat_is_not_kept_after_the_visit(model):
+    script, _ = model
+    script.append(says("hello guest"))
+    at = as_guest()
+    at.chat_input(key="agent-input-0").set_value("hi").run()
+    assert "hello guest" in texts(at)
+    again = as_guest()  # a new visit: nothing saved
+    assert again.selectbox(key="agent-thread-0").options == ["➕ New chat"]
+    assert Memory(settings.memory_db).threads(again.session_state["visitor"].workspace) == []  # and nothing written to the database
+
+
+def test_signed_in_user_keeps_chats_memory_and_scans_across_visits(model, monkeypatch):
+    script, _ = model
+    script.append(says("welcome back"))
+    signed_in(monkeypatch)
+    at = public_start()
+    visitor = at.session_state["visitor"]
+    assert not visitor.identity.is_guest and visitor.scan_db is not None
+    assert "me@example.com" in texts(at) and any(b.key == "side-logout" for b in at.button)
+    at.chat_input(key="agent-input-0").set_value("remember me").run()
+    at.text_input(key="fact-0").set_value("we use Okta for SSO").run()
+    at.button(key="remember-0").click().run()
+    later = start()  # another visit by the same account (a new browser session)
+    assert later.session_state["visitor"].workspace == visitor.workspace and later.session_state["visitor"] is not visitor
+    assert len(later.selectbox(key="agent-thread-0").options) == 2
+    assert [f["text"] for f in Memory(settings.memory_db).facts(visitor.workspace)] == ["we use Okta for SSO"]
+
+
+def test_two_signed_in_users_never_see_each_others_data(model, monkeypatch):
+    script, _ = model
+    script.append(says("private answer"))
+    signed_in(monkeypatch, "a@example.com", "sub-a")
+    a = public_start()
+    a.chat_input(key="agent-input-0").set_value("secret question").run()
+    signed_in(monkeypatch, "b@example.com", "sub-b")
+    b = start()
+    assert b.selectbox(key="agent-thread-0").options == ["➕ New chat"] and "secret question" not in texts(b)
+
+
+def test_an_account_not_on_the_access_list_is_turned_away(model, monkeypatch):
+    from dataclasses import replace
+
+    from secagents import identity
+
+    monkeypatch.setattr(identity, "settings", replace(settings, allowed_emails=("boss@example.com",), allowed_email_domains=()))
+    signed_in(monkeypatch, "stranger@evil.com")
+    at = public_start()
+    assert any("access list" in e.value for e in at.error)
+    assert not at.chat_input and "visitor" not in at.session_state
+
+
+def test_an_unverified_email_is_turned_away(model, monkeypatch):
+    signed_in(monkeypatch, verified=False)
+    at = public_start()
+    assert any("not verified" in e.value for e in at.error) and not at.chat_input
+
+
+def test_the_download_limit_is_enforced_for_github_links(model, monkeypatch):
+    from dataclasses import replace
+
+    calls = []
+    monkeypatch.setattr("secagents.sources.resolve", lambda *a, **k: calls.append(a))
+    monkeypatch.setattr("secagents.limits.settings", replace(settings, guest_daily_downloads=0))
+    at = as_guest()
+    at.radio[0].set_value("Upload my own files").run()
+    at.text_input(key="repo-0").set_value("https://github.com/owner/repo").run()
+    assert any("Download limit" in e.value for e in at.error) and calls == []
+
+
+def test_the_shared_key_budget_is_shown_in_the_sidebar(model):
+    at = as_guest()
+    assert "Shared-key tokens today" in texts(at)

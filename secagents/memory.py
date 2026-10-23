@@ -11,12 +11,12 @@ from __future__ import annotations
 import json
 import math
 import re
-import sqlite3
 import time
 import uuid
 from pathlib import Path
 from typing import Any
 
+from .db import Db, open_db
 from .rag.store import hash_embed
 
 MAX_FACT_CHARS = 500
@@ -32,11 +32,11 @@ SECRET_PATTERNS = [
 ]
 
 SCHEMA = """
-CREATE TABLE IF NOT EXISTS threads (id TEXT PRIMARY KEY, workspace TEXT NOT NULL, title TEXT NOT NULL, created REAL, updated REAL);
+CREATE TABLE IF NOT EXISTS threads (id TEXT PRIMARY KEY, workspace TEXT NOT NULL, title TEXT NOT NULL, created DOUBLE PRECISION, updated DOUBLE PRECISION);
 CREATE TABLE IF NOT EXISTS messages (thread_id TEXT NOT NULL, seq INTEGER NOT NULL, body TEXT NOT NULL, PRIMARY KEY (thread_id, seq));
-CREATE TABLE IF NOT EXISTS memories (id TEXT PRIMARY KEY, workspace TEXT NOT NULL, text TEXT NOT NULL, vec TEXT NOT NULL, created REAL);
+CREATE TABLE IF NOT EXISTS memories (id TEXT PRIMARY KEY, workspace TEXT NOT NULL, text TEXT NOT NULL, vec TEXT NOT NULL, created DOUBLE PRECISION);
 CREATE INDEX IF NOT EXISTS memories_ws ON memories (workspace);
-CREATE INDEX IF NOT EXISTS threads_ws ON threads (workspace, updated);
+CREATE INDEX IF NOT EXISTS threads_ws ON threads (workspace, updated)
 """
 
 
@@ -60,40 +60,32 @@ def _words(text: str) -> set[str]:
 
 
 class Memory:
-    def __init__(self, path: str | Path):
-        self.path = Path(path)
-        if str(path) != ":memory:":
-            self.path.parent.mkdir(parents=True, exist_ok=True)
-        self._keep = sqlite3.connect(str(self.path), check_same_thread=False) if str(path) == ":memory:" else None
-        with self._db() as db:
-            db.executescript(SCHEMA)
+    """Chats and facts in a database. ``target`` is a SQLite path, ``":memory:"``, a Postgres URL or an open Db."""
 
-    def _db(self):
-        db = self._keep or sqlite3.connect(str(self.path), timeout=10)
-        db.row_factory = sqlite3.Row
-        return _Conn(db, owned=self._keep is None)
+    def __init__(self, target: "str | Path | Db"):
+        self.db = target if isinstance(target, Db) else open_db(target)
+        self.db.script(SCHEMA)
 
     # ---- threads -----------------------------------------------------------------------------------------
     def create_thread(self, workspace: str, title: str = "New chat") -> str:
         tid, now = uuid.uuid4().hex[:12], time.time()
-        with self._db() as db:
-            db.execute("INSERT INTO threads VALUES (?,?,?,?,?)", (tid, workspace, redact(title)[:80] or "New chat", now, now))
+        with self.db.transaction() as tx:
+            tx.execute("INSERT INTO threads VALUES (?,?,?,?,?)", (tid, workspace, redact(title)[:80] or "New chat", now, now))
         return tid
 
     def threads(self, workspace: str) -> list[dict[str, Any]]:
-        with self._db() as db:
-            rows = db.execute("SELECT id, title, created, updated FROM threads WHERE workspace=? ORDER BY updated DESC", (workspace,)).fetchall()
-        return [dict(r) for r in rows]
+        with self.db.transaction() as tx:
+            return tx.execute("SELECT id, title, created, updated FROM threads WHERE workspace=? ORDER BY updated DESC", (workspace,)).fetchall()
 
     def owns_thread(self, thread_id: str, workspace: str) -> bool:
-        with self._db() as db:
-            return db.execute("SELECT 1 FROM threads WHERE id=? AND workspace=?", (thread_id, workspace)).fetchone() is not None
+        with self.db.transaction() as tx:
+            return tx.execute("SELECT 1 AS ok FROM threads WHERE id=? AND workspace=?", (thread_id, workspace)).fetchone() is not None
 
     def messages(self, thread_id: str, workspace: str) -> list[dict[str, Any]]:
         if not self.owns_thread(thread_id, workspace):
             return []
-        with self._db() as db:
-            rows = db.execute("SELECT body FROM messages WHERE thread_id=? ORDER BY seq", (thread_id,)).fetchall()
+        with self.db.transaction() as tx:
+            rows = tx.execute("SELECT body FROM messages WHERE thread_id=? ORDER BY seq", (thread_id,)).fetchall()
         return [json.loads(r["body"]) for r in rows]
 
     def save_messages(self, thread_id: str, workspace: str, messages: list[dict[str, Any]]) -> None:
@@ -101,19 +93,20 @@ class Memory:
         if not self.owns_thread(thread_id, workspace):
             raise KeyError(thread_id)
         clean = [{**m, "content": redact(m.get("content") or "")} for m in messages]
-        with self._db() as db:
-            db.execute("DELETE FROM messages WHERE thread_id=?", (thread_id,))
-            db.executemany("INSERT INTO messages VALUES (?,?,?)", [(thread_id, i, json.dumps(m, default=str)) for i, m in enumerate(clean)])
-            first = next((m["content"] for m in clean if m.get("role") == "user" and m["content"]), "")
-            db.execute("UPDATE threads SET updated=?, title=CASE WHEN title='New chat' AND ?<>'' THEN ? ELSE title END WHERE id=?",
-                       (time.time(), first, first[:60], thread_id))
+        first = next((m["content"] for m in clean if m.get("role") == "user" and m["content"]), "")
+        with self.db.transaction() as tx:
+            tx.execute("DELETE FROM messages WHERE thread_id=?", (thread_id,))
+            tx.executemany("INSERT INTO messages VALUES (?,?,?)", [(thread_id, i, json.dumps(m, default=str)) for i, m in enumerate(clean)])
+            current = tx.execute("SELECT title FROM threads WHERE id=?", (thread_id,)).fetchone()
+            title = first[:60] if first and current and current["title"] == "New chat" else (current or {}).get("title", "New chat")
+            tx.execute("UPDATE threads SET updated=?, title=? WHERE id=?", (time.time(), title, thread_id))
 
     def delete_thread(self, thread_id: str, workspace: str) -> bool:
         if not self.owns_thread(thread_id, workspace):
             return False
-        with self._db() as db:
-            db.execute("DELETE FROM messages WHERE thread_id=?", (thread_id,))
-            db.execute("DELETE FROM threads WHERE id=?", (thread_id,))
+        with self.db.transaction() as tx:
+            tx.execute("DELETE FROM messages WHERE thread_id=?", (thread_id,))
+            tx.execute("DELETE FROM threads WHERE id=?", (thread_id,))
         return True
 
     # ---- long-term facts ---------------------------------------------------------------------------------
@@ -122,24 +115,23 @@ class Memory:
         text = " ".join(text.split())[:MAX_FACT_CHARS]
         if not text or looks_secret(text):
             return None
-        with self._db() as db:
-            if db.execute("SELECT COUNT(*) FROM memories WHERE workspace=?", (workspace,)).fetchone()[0] >= MAX_FACTS:
+        with self.db.transaction() as tx:
+            if tx.execute("SELECT COUNT(*) AS n FROM memories WHERE workspace=?", (workspace,)).fetchone()["n"] >= MAX_FACTS:
                 return None
-            same = db.execute("SELECT id FROM memories WHERE workspace=? AND lower(text)=lower(?)", (workspace, text)).fetchone()
+            same = tx.execute("SELECT id FROM memories WHERE workspace=? AND lower(text)=lower(?)", (workspace, text)).fetchone()
             if same:
                 return same["id"]
             mid = "m" + uuid.uuid4().hex[:8]
-            db.execute("INSERT INTO memories VALUES (?,?,?,?,?)", (mid, workspace, text, json.dumps(hash_embed(text)), time.time()))
+            tx.execute("INSERT INTO memories VALUES (?,?,?,?,?)", (mid, workspace, text, json.dumps(hash_embed(text)), time.time()))
         return mid
 
     def facts(self, workspace: str) -> list[dict[str, Any]]:
-        with self._db() as db:
-            rows = db.execute("SELECT id, text, created FROM memories WHERE workspace=? ORDER BY created DESC", (workspace,)).fetchall()
-        return [dict(r) for r in rows]
+        with self.db.transaction() as tx:
+            return tx.execute("SELECT id, text, created FROM memories WHERE workspace=? ORDER BY created DESC", (workspace,)).fetchall()
 
     def recall(self, query: str, workspace: str, k: int = 5) -> list[dict[str, Any]]:
-        with self._db() as db:
-            rows = db.execute("SELECT id, text, vec, created FROM memories WHERE workspace=?", (workspace,)).fetchall()
+        with self.db.transaction() as tx:
+            rows = tx.execute("SELECT id, text, vec, created FROM memories WHERE workspace=?", (workspace,)).fetchall()
         q_vec, q_words = hash_embed(query), _words(query)
         scored = []
         for r in rows:
@@ -150,8 +142,8 @@ class Memory:
         return [item for _, item in sorted(scored, key=lambda t: -t[0])[:k]]
 
     def forget(self, memory_id: str, workspace: str) -> bool:
-        with self._db() as db:
-            return db.execute("DELETE FROM memories WHERE id=? AND workspace=?", (memory_id, workspace)).rowcount > 0
+        with self.db.transaction() as tx:
+            return tx.execute("DELETE FROM memories WHERE id=? AND workspace=?", (memory_id, workspace)).rowcount > 0
 
     # ---- export / import (the disk is ephemeral on free hosting) --------------------------------------------
     def export_json(self, workspace: str) -> str:
@@ -173,18 +165,3 @@ class Memory:
                 self.save_messages(tid, workspace, msgs)
                 added_threads += 1
         return {"facts": added_facts, "threads": added_threads}
-
-
-class _Conn:
-    """sqlite3 connection as a context manager that commits, and closes only connections it opened."""
-
-    def __init__(self, db: sqlite3.Connection, owned: bool):
-        self.db, self.owned = db, owned
-
-    def __enter__(self) -> sqlite3.Connection:
-        return self.db
-
-    def __exit__(self, exc_type, *_):
-        self.db.rollback() if exc_type else self.db.commit()
-        if self.owned:
-            self.db.close()

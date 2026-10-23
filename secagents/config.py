@@ -16,6 +16,10 @@ def _env(name: str, default: str = "") -> str:
     return os.getenv(name, default).strip()
 
 
+def _csv(name: str) -> tuple[str, ...]:
+    return tuple(p.strip().lower() for p in _env(name).split(",") if p.strip())
+
+
 @dataclass(frozen=True)
 class Settings:
     anthropic_api_key: str = field(default_factory=lambda: _env("ANTHROPIC_API_KEY"))
@@ -49,10 +53,20 @@ class Settings:
     agent_max_steps: int = field(default_factory=lambda: int(_env("AGENT_MAX_STEPS", "6") or 6))
     agent_turn_tokens: int = field(default_factory=lambda: int(_env("AGENT_TURN_TOKENS", "40000") or 40000))
 
-    # Public deployment (Streamlit Community Cloud): no local paths, per-visitor isolation, a daily model-token cap.
+    # Public deployment (Streamlit Community Cloud): guests or signed-in users, per-visitor isolation, spending limits.
     public: bool = field(default_factory=lambda: _env("SECAGENTS_PUBLIC") in {"1", "true", "yes"})
-    daily_token_cap: int = field(default_factory=lambda: int(_env("DAILY_TOKEN_CAP", "300000") or 300000))
-    session_token_cap: int = field(default_factory=lambda: int(_env("SESSION_TOKEN_CAP", "60000") or 60000))
+    database_url: str = field(default_factory=lambda: _env("DATABASE_URL"))  # postgresql://... keeps data across restarts
+    auth_provider: str = field(default_factory=lambda: _env("AUTH_PROVIDER"))  # name of the [auth.<name>] secrets block
+    allowed_emails: tuple[str, ...] = field(default_factory=lambda: _csv("ALLOWED_EMAILS"))  # empty = any signed-in user
+    allowed_email_domains: tuple[str, ...] = field(default_factory=lambda: _csv("ALLOWED_EMAIL_DOMAINS"))
+    # model tokens spent on the HOST's key (a visitor's own typed key is never counted)
+    session_token_cap: int = field(default_factory=lambda: int(_env("SESSION_TOKEN_CAP", "60000") or 60000))  # per guest session
+    guest_daily_token_cap: int = field(default_factory=lambda: int(_env("GUEST_DAILY_TOKEN_CAP", "80000") or 80000))  # per guest client, per day
+    user_daily_token_cap: int = field(default_factory=lambda: int(_env("USER_DAILY_TOKEN_CAP", "250000") or 250000))  # per signed-in user, per day
+    daily_token_cap: int = field(default_factory=lambda: int(_env("DAILY_TOKEN_CAP", "600000") or 600000))  # everyone together, per day
+    rate_per_minute: int = field(default_factory=lambda: int(_env("RATE_PER_MINUTE", "20") or 20))  # model calls per visitor per minute
+    guest_daily_downloads: int = field(default_factory=lambda: int(_env("GUEST_DAILY_DOWNLOADS", "3") or 3))  # GitHub / Drive fetches
+    user_daily_downloads: int = field(default_factory=lambda: int(_env("USER_DAILY_DOWNLOADS", "15") or 15))
 
     @property
     def has_any_llm(self) -> bool:

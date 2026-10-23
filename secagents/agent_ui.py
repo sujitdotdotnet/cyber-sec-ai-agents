@@ -10,7 +10,7 @@ from typing import Any
 
 import streamlit as st
 
-from . import history, session
+from . import history
 from .agent import Agent
 from .config import settings
 from .llm import get_router
@@ -36,20 +36,21 @@ def shared_hub() -> McpHub:
 
 
 def _memory() -> Memory:
-    if "agent_memory" not in st.session_state:
-        st.session_state["agent_memory"] = Memory(settings.memory_db)
-    return st.session_state["agent_memory"]
+    """Guests: a private in-memory store that vanishes with the session. Signed-in users and local runs: the database."""
+    ss = st.session_state
+    if "agent_memory" not in ss:
+        visitor = ss.get("visitor") if settings.public else None
+        ss["agent_memory"] = Memory(":memory:") if visitor is not None and visitor.identity.is_guest else Memory(settings.database_url or settings.memory_db)
+    return ss["agent_memory"]
 
 
 def _switch_thread(pick_key: str) -> None:
     st.session_state["agent_thread"] = st.session_state[pick_key]
 
 
-def _workspace(nonce: int) -> str:
-    if settings.public:
-        code = st.session_state.get(f"agent-ws-{nonce}", "")
-        return session.workspace_id(code) if len(code.strip()) >= 8 else session.workspace()
-    return "default"
+def _workspace() -> str:
+    visitor = st.session_state.get("visitor") if settings.public else None
+    return visitor.workspace if visitor is not None else "default"
 
 
 def _groups(messages: list[dict[str, Any]]) -> list[tuple[str, list[dict[str, Any]]]]:
@@ -150,19 +151,15 @@ def _memory_panel(memory: Memory, ws: str, nonce: int) -> None:
 
 def render(result: dict[str, Any], nonce: int = 0) -> None:
     router = get_router()
-    memory, ws = _memory(), _workspace(nonce)
+    memory, ws = _memory(), _workspace()
     ctx = ToolContext(state=result or {}, memory=memory, workspace=ws)
     ss = st.session_state
 
     st.caption("Chat with an agent that decides which tools to use: the knowledge base, your assessment results, log analysis. "
                "Actions that change something ask for your approval first.")
-    if settings.public:
-        st.text_input("Workspace code (optional)", key=f"agent-ws-{nonce}", type="password", placeholder="8+ characters",
-                      help="Use the same code next time to find your saved chats and memory again. It is a shared secret, "
-                           "not a login: choose something others cannot guess.")
-        if router.budget is not None:
-            st.caption(f"Shared-key allowance this session: {router.budget.session_used:,} / {router.budget.session_cap:,} tokens. "
-                       "A key pasted in the sidebar is used instead and does not count.")
+    visitor = st.session_state.get("visitor") if settings.public else None
+    if visitor is not None and visitor.identity.is_guest:
+        st.caption("You are a guest: chats and memory last only for this visit. Use *Export* in the 🧠 Memory panel to keep them, or sign in.")
 
     with st.expander("⚙ Agent settings", expanded=False):
         use_mcp = st.checkbox("Route tool calls through MCP", key=f"agent-mcp-{nonce}",

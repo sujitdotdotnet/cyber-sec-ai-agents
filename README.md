@@ -72,13 +72,13 @@ flowchart LR
 
 ```bash
 Rename the .env.example file to .env and configure your APIKey.
-python -m venv .venv && source .venv/bin/activate
+python -m venv .venv && .venv\Scripts\activate
 pip install -r requirements.txt
 cp .env.example .env        # add ANTHROPIC_API_KEY / OPENAI_API_KEY / OPENROUTER_API_KEY
 
 streamlit run app/streamlit_app.py     # dashboard
 python -m secagents --json results.json  # CLI: writes security_report.md (add --docx r.docx --xlsx r.xlsx --pdf r.pdf)
-pytest                                  # 218 tests, no API keys needed
+pytest                                  # 246 tests, no API keys needed
 ```
 
 The CLI accepts your own data: `python -m secagents --logs /var/log/auth.log access.log --code ./src --requirements requirements.txt --dockerfile Dockerfile --config my_config.yaml`.
@@ -129,10 +129,27 @@ flowchart LR
 
 ## Deploy to the public cloud (Streamlit Community Cloud)
 
+With `SECAGENTS_PUBLIC=1` the site opens on a front door: **Sign in** or **Continue as guest**.
+
+| | Guest | Signed in |
+|---|---|---|
+| Needs an account | no | yes (Google or any OpenID Connect provider) |
+| Chats, memory, scan history | this visit only (export from the 🧠 Memory panel) | saved to your account, any device |
+| Shared-key allowance | `SESSION_TOKEN_CAP` per session **and** `GUEST_DAILY_TOKEN_CAP` per client per day | `USER_DAILY_TOKEN_CAP` per day |
+| GitHub / Drive downloads | 3 a day | 15 a day |
+| Your own API key | never limited or counted | never limited or counted |
+
+Everyone is also held to `DAILY_TOKEN_CAP` together and `RATE_PER_MINUTE` model calls a minute. Guests are limited per client (a hash of the address the host's proxy reports, never the address itself), so opening a new tab does not reset the allowance.
+
+**Set it up**
+
 1. Push the repo to GitHub, then on [share.streamlit.io](https://share.streamlit.io) create an app with main file `app/streamlit_app.py`.
-2. In **App settings → Secrets** paste the contents of [`.streamlit/secrets.toml.example`](.streamlit/secrets.toml.example) with your key. Top-level keys become environment variables.
-3. With `SECAGENTS_PUBLIC="1"` the app is safe to share: every visitor gets their own router and typed keys, live-log folder, scan history and memory workspace (all visitors share one Python process, so this isolation is what keeps keys apart); server folders, network shares and **Browse** are disabled (GitHub / Drive links and uploads still work); *approve automatically* is hidden; extra MCP servers are ignored; and your key is metered, `SESSION_TOKEN_CAP` per visitor and `DAILY_TOKEN_CAP` for everyone. A visitor who pastes their own key is not metered and costs you nothing. When the allowance is gone the agents fall back to rule-based mode.
-4. The disk is temporary and the app sleeps after inactivity: scan history, memory and the Chroma index are rebuilt or lost on restart, which is why memory has export / import. A *workspace code* in the Agent tab lets a visitor find their saved chats again; it is a shared secret, not a login.
+2. **Storage that survives restarts**: create a free Postgres database (Neon or Supabase) and put its URL in `DATABASE_URL`. Memory, chats, scan history and the usage counters for the limits then live there. Without it, everything sits on the host's temporary disk and is lost on restart, and so are the limits' counters. The Chroma index is rebuilt from `knowledge/` on start; it needs no storage.
+3. **Sign-in**: create an OAuth client with your provider (for Google: Google Cloud console → APIs & Services → Credentials), add `https://YOUR-APP.streamlit.app/oauth2callback` as an allowed redirect URI, and fill the `[auth]` block. Without an `[auth]` block the site is guest-only and says so. Optionally restrict who may sign in with `ALLOWED_EMAILS` / `ALLOWED_EMAIL_DOMAINS`.
+4. In **App settings → Secrets** paste [`.streamlit/secrets.toml.example`](.streamlit/secrets.toml.example) with your values. Keep the top-level keys above the `[auth]` block.
+5. Also set a monthly spending limit on the API key itself with your provider: it is the one cap that holds even if something in the app is wrong.
+
+**What public mode switches on**: per-visitor routers and typed keys (all visitors share one Python process, so this is what keeps keys apart), per-visitor live-log folders and history, no server folders / network shares / **Browse**, no *approve automatically*, extra MCP servers ignored, and the limits above. The app sleeps after inactivity; a restart is harmless once `DATABASE_URL` is set.
 
 **Docker** (any host): `docker build -t secagents .` then `docker run -p 8501:8501 --env-file .env secagents` (add `-e SECAGENTS_PUBLIC=1` for a shared deployment). CI (`.github/workflows/ci.yml`) runs the tests and builds this image on every push.
 
@@ -167,7 +184,9 @@ secagents/
   agent_ui.py    The Agent tab
   memory.py      SQLite chats + long-term facts, redaction, export / import
   mcp_server.py  MCP server (stdio / streamable HTTP);  mcp_client.py  MCP client hub
-  session.py     Per-visitor router, folders and token budget for public deployments
+  session.py     Per-visitor router, folders, history and limits for public deployments
+  gate.py        Sign in / Continue as guest front door;  identity.py  who the visitor is, access list
+  limits.py      Token, rate and download limits kept in the database;  db.py  SQLite or Postgres
 knowledge/       cves.jsonl, attack.jsonl, controls.jsonl, threat_feed.json
 samples/         demo logs, vulnerable app, system config, live_examples/ (paste-in attack lines)
 app/             Streamlit dashboard (assets/: banner still PNG and scanning GIF)
@@ -216,7 +235,7 @@ Requirement: *an AI-powered cybersecurity system made of multiple agents that mo
 | 17 | Agent **orchestration** | ✅ | `agent.py`: LangGraph loop with approvals (`interrupt`), step and token limits, provider failover mid-conversation |
 | 18 | Agent **interface** | ✅ | 🤖 Agent tab: chat, visible tool calls and results, approve / deny cards, conversation picker, memory panel |
 | 19 | **MCP** | ✅ | `mcp_server.py` (tools, resource, prompt) and `mcp_client.py`; the agent can route calls through it. No public `/mcp` URL on Streamlit Cloud: run the server locally or in Docker |
-| 20 | Deployed on a **public cloud** | 🟡 | Streamlit Community Cloud settings, public-mode hardening and Docker / CI are in the repo; the deployment itself is yours to create and was not exercised from here |
+| 20 | Deployed on a **public cloud** | 🟡 | Streamlit Community Cloud settings, guest / sign-in gate, per-user storage and limits, and Docker / CI are in the repo. The deployment itself, the sign-in provider and the Postgres database are yours to create; the Postgres path and real sign-in were not exercised against live services from here |
 
 ✅ implemented · 🟡 partly implemented · ❌ not implemented
 

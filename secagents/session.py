@@ -9,24 +9,24 @@ one shared router and the folders from the settings.
 
 from __future__ import annotations
 
-import hashlib
-import json
 import shutil
-import threading
 import time
 import uuid
 from contextvars import ContextVar
 from dataclasses import dataclass, field
-from datetime import date
 from pathlib import Path
 from typing import Any
 
 from .config import settings
+from .db import Db, open_db
+from .identity import Identity, guest
+from .limits import Allowance, Usage, allowance_for
 
 _router: ContextVar[Any] = ContextVar("secagents_router", default=None)
 _live: ContextVar[Path | None] = ContextVar("secagents_live_dir", default=None)
 _history: ContextVar[Path | None] = ContextVar("secagents_history_dir", default=None)
 _workspace: ContextVar[str] = ContextVar("secagents_workspace", default="default")
+_scans: ContextVar[tuple[Db, str] | None] = ContextVar("secagents_scan_store", default=None)
 
 STALE_AFTER = 24 * 3600  # per-session folders older than this are removed
 
@@ -51,50 +51,13 @@ def history_dir() -> Path:
     return _history.get() or settings.history_dir
 
 
+def scan_store() -> tuple[Db, str] | None:
+    """(database, owner) when Scan history is kept in the database for the current visitor, else None (files)."""
+    return _scans.get()
+
+
 def workspace() -> str:
     return _workspace.get()
-
-
-def workspace_id(code: str) -> str:
-    """A stable workspace id from a code the visitor chose (so memory survives a page reload). Not authentication."""
-    return "ws-" + hashlib.sha256(code.strip().encode()).hexdigest()[:16]
-
-
-class DailyBudget:
-    """Model tokens spent from the host's own API keys: a cap per visitor session and one per day for everyone."""
-
-    _lock = threading.Lock()
-
-    def __init__(self, file: Path, session_cap: int, daily_cap: int):
-        self.file, self.session_cap, self.daily_cap, self.session_used = file, session_cap, daily_cap, 0
-
-    def _read(self) -> dict[str, Any]:
-        try:
-            doc = json.loads(self.file.read_text())
-            return doc if doc.get("day") == str(date.today()) else {"day": str(date.today()), "tokens": 0}
-        except (OSError, ValueError):
-            return {"day": str(date.today()), "tokens": 0}
-
-    def daily_used(self) -> int:
-        return int(self._read()["tokens"])
-
-    def blocked(self) -> str | None:
-        if self.session_used >= self.session_cap:
-            return f"This session used its {self.session_cap:,}-token allowance on the shared key. Paste your own API key in the sidebar to continue."
-        if self.daily_used() >= self.daily_cap:
-            return "The shared key reached today's limit. Paste your own API key in the sidebar, or try again tomorrow."
-        return None
-
-    def spend(self, tokens: int) -> None:
-        self.session_used += tokens
-        with self._lock:
-            doc = self._read()
-            doc["tokens"] = int(doc["tokens"]) + tokens
-            try:
-                self.file.parent.mkdir(parents=True, exist_ok=True)
-                self.file.write_text(json.dumps(doc))
-            except OSError:
-                pass
 
 
 @dataclass
@@ -104,19 +67,31 @@ class Session:
     live_dir: Path
     history_dir: Path
     workspace: str
-    budget: DailyBudget | None = None
+    identity: Identity
+    allowance: Allowance
+    db: Db
+    scan_db: tuple[Db, str] | None = None  # signed-in users keep Scan history in the database, under their id
     extras: dict[str, Any] = field(default_factory=dict)
 
+    @property
+    def budget(self) -> Allowance:
+        return self.allowance
 
-def new_session(router: Any, base: Path | None = None) -> Session:
+
+def new_session(router: Any, identity: Identity | None = None, base: Path | None = None, db: Db | None = None) -> Session:
     """A fresh visitor session with its own folders under ``base`` (default: .sessions next to the history)."""
+    identity = identity or guest()
     base = base or settings.history_dir.parent / ".sessions"
+    db = db or open_db(settings.database_url or settings.memory_db)
     sid = uuid.uuid4().hex[:16]
     _sweep(base)
+    usage = Usage(db)
+    usage.prune()
+    allowance = allowance_for(identity, usage)
+    router.budget = allowance
     root = base / sid
-    budget = DailyBudget(base / "usage.json", settings.session_token_cap, settings.daily_token_cap)
-    router.budget = budget
-    return Session(sid, router, root / "live", root / "history", sid, budget)
+    return Session(sid, router, root / "live", root / "history", identity.id, identity, allowance, db,
+                   scan_db=None if identity.is_guest else (db, identity.id))
 
 
 def activate(s: Session) -> None:
@@ -125,10 +100,11 @@ def activate(s: Session) -> None:
     _live.set(s.live_dir)
     _history.set(s.history_dir)
     _workspace.set(s.workspace)
+    _scans.set(s.scan_db)
 
 
 def deactivate() -> None:
-    for var, default in ((_router, None), (_live, None), (_history, None), (_workspace, "default")):
+    for var, default in ((_router, None), (_live, None), (_history, None), (_workspace, "default"), (_scans, None)):
         var.set(default)
 
 
