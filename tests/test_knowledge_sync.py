@@ -474,3 +474,16 @@ def test_the_footer_shows_when_the_knowledge_was_last_updated():
     assert line and line[0].startswith("📚 Knowledge updated 20") and "CISA KEV" in line[0] and "OSV" in line[0] and "MITRE ATT&CK v" in line[0]
     sources = [e for e in at.expander if e.label == "About Cyber Security AI Agent"][0]
     assert any("Knowledge sources" in m.value for m in sources.markdown)
+
+
+def test_the_top_tagline_also_shows_when_the_knowledge_was_updated():
+    from pathlib import Path as P
+    from streamlit.testing.v1 import AppTest
+
+    app = str(P(__file__).resolve().parent.parent / "app" / "streamlit_app.py")
+    at = AppTest.from_file(app, default_timeout=120).run()
+    tagline = next(m.value for m in at.markdown if "sa-tagline" in m.value)
+    cta = "(Scan your GitHub Repositories, own logs, code and config files now)"
+    assert cta in tagline and "📚 Knowledge updated 20" in tagline
+    assert tagline.index(cta) < tagline.index("📚 Knowledge updated")  # appended after the call to action
+    assert "MITRE ATT&amp;CK" in tagline  # escaped for HTML

@@ -5,6 +5,7 @@
 
 from __future__ import annotations
 
+import html
 import json
 import logging
 import sys
@@ -60,6 +61,7 @@ def _import_secagents() -> dict:
     from secagents.qa import ask
     from secagents.rag import embedding_backend, set_embedding_key
     from secagents.repo_scan import browse_folder, collect_repo_inputs, find_logs, ignore_entries
+    from secagents.knowledge import footer_text as knowledge_text
     from secagents.version import app_title
     from secagents.session import activate as activate_session, live_dir as current_live_dir, new_session
     from secagents.sources import SourceError, classify as classify_source, resolve as resolve_source
@@ -128,6 +130,7 @@ APP_CSS = """
 /* status dot: red and still when idle, green and pulsing while any scan is running */
 .sa-dot{display:inline-block;width:12px;height:12px;border-radius:50%;background:#d64545;margin-right:8px;vertical-align:middle}
 .sa-dot.on{background:#2ecc71;animation:sa-greenpulse 1.2s ease-in-out infinite}
+.sa-knowledge{font-size:.85rem;font-weight:400;opacity:.8;letter-spacing:0}
 .sa-tagline{font-size:1.35rem;font-weight:600;letter-spacing:.2px;line-height:1.35;margin:-.25rem 0 .75rem}
 /* fade in and out (1.6 s per cycle) for the call-to-action; off for people who prefer reduced motion */
 .sa-pulse-text{animation:sa-textpulse 1.6s ease-in-out infinite}
@@ -545,7 +548,8 @@ st.title(f"🛡️ {app_title()}")
 st.markdown(
     f'<div class="sa-tagline" style="color:{tagline_color()}">Five AI agents for detection, intel, scanning, '
     f"response and compliance. <span class='sa-pulse-text' style='color:{cta_color()}'>"
-    "(Scan your GitHub Repositories, own logs, code and config files now)</span></div>",
+    "(Scan your GitHub Repositories, own logs, code and config files now)</span>"
+    f"<br><span class='sa-knowledge'>📚 {html.escape(knowledge_text())}</span></div>",
     unsafe_allow_html=True,
 )
 if scanning:
