@@ -387,7 +387,7 @@ with st.sidebar:
     repo_folder = repo_excludes = repo_path = ""  # repo_folder: what was typed; repo_path: the local folder it resolves to
     repo_info = None
     if source == "Upload my own files":
-        st.markdown("**Scan a whole folder or repository**")
+        st.markdown("**Scan a GitHub Repository or Shared Folder**")
         repo_key = f"repo-{nonce}"
         repo_folder = st.text_input(
             "Repository folder path or link", key=repo_key,
