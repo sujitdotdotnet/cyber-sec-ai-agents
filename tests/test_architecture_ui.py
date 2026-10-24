@@ -108,3 +108,15 @@ def test_a_reopened_scan_keeps_its_decisions(assessed):
 def test_the_report_tab_carries_the_review_sections(assessed):
     md = assessed.session_state["result"]["report_md"]
     assert "## 6. Uncertainty review" in md and "### Containment approval (human gate)" in md
+
+
+def test_after_saving_the_user_sees_what_was_saved_and_the_runbook_button_counts_it(assessed):
+    scan_id = assessed.session_state["scan"]["id"]
+    first = assessed.session_state["result"]["containment_gate"]["actions"][0]
+    assert any("approved runbook (0 approved)" in b.label.lower() for b in assessed.get("download_button"))  # nothing chosen yet
+    assessed.radio(key=f"gate-choice-{scan_id}-{first['id']}-0").set_value("Approve")
+    [save] = [b for b in assessed.button if b.label == "Save decisions"]
+    save.click().run()
+    assert not assessed.exception
+    assert any("Saved: 1 approved" in s.value for s in assessed.success)
+    assert any("approved runbook (1 approved)" in b.label.lower() for b in assessed.get("download_button"))

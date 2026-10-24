@@ -82,6 +82,9 @@ def gate_panel(result: dict[str, Any], scan: dict[str, Any] | None, who: str, no
     st.info("SecAgents executes none of these steps. Review each action, edit the command if it needs changing, then approve or reject it. "
             "Approved actions go into a runbook script that you read and run yourself.", icon="🔒")
     n = approvals.counts(gate)
+    flash = st.session_state.pop("gate_flash", "")
+    if flash:
+        st.success(flash)
     cols = st.columns(3)
     cols[0].metric("Awaiting approval", n["pending"])
     cols[1].metric("Approved", n["approved"])
@@ -109,8 +112,13 @@ def gate_panel(result: dict[str, Any], scan: dict[str, Any] | None, who: str, no
                     history.set_gate(scan["id"], new)
                 except (OSError, ValueError, KeyError):
                     st.warning("Saved for this session only: the scan could not be updated in your history.")
+            counts = approvals.counts(new)
+            st.session_state["gate_flash"] = (f"Saved: {counts['approved']} approved, {counts['rejected']} rejected, "
+                                              f"{counts['pending']} awaiting. The runbook below lists the approved actions.")
             st.rerun()
-    st.download_button("⬇ Approved runbook (.sh)", approvals.runbook(gate, (scan or {}).get("name", "Containment runbook"), who), "containment_runbook.sh",
+    st.caption("The runbook contains the decisions saved above. Approve an action, then click Save decisions, before you download it.")
+    st.download_button(f"⬇ Approved runbook ({n['approved']} approved)",
+                       approvals.runbook(gate, (scan or {}).get("name", "Containment runbook"), who), "containment_runbook.sh",
                        on_click="ignore", help="Only the approved actions, with who approved each. Review it before you run anything.")
     if gate.get("audit"):
         with st.expander(f"Audit trail ({len(gate['audit'])})"):

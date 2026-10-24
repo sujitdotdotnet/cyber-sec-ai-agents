@@ -100,7 +100,7 @@ def runbook(gate: dict[str, Any], title: str = "Containment runbook", who: str =
         "",
     ]
     if not approved:
-        lines.append("# No actions have been approved yet.")
+        lines.append("# No actions have been approved yet. In the app: choose Approve for an action, click Save decisions, then download again.")
     for a in approved:
         lines += [f"# [{a['id']}] {a['incident']} · {a['phase']} · {a['priority']}: {a['action']}",
                   f"# approved by {a['decided_by']} at {a['decided_at']}"]
