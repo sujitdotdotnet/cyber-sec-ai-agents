@@ -1,19 +1,19 @@
 {
   "sources": {
     "cisa_kev": {
-      "count": 1754,
-      "source_date": "2026-10-21",
+      "count": 1756,
+      "source_date": "2026-10-23",
       "url": "https://www.cisa.gov/sites/default/files/feeds/known_exploited_vulnerabilities.json",
-      "hash": "599e79b8ecb5cc59",
-      "updated": "2026-10-23T11:18:27Z"
+      "hash": "2002a4d83c88268d",
+      "updated": "2026-10-24T06:22:04Z"
     },
     "osv": {
-      "count": 1711,
+      "count": 1733,
       "packages": 111,
-      "source_date": "2026-10-22",
+      "source_date": "2026-10-23",
       "url": "https://osv.dev",
-      "hash": "245ea5b0b1e43238",
-      "updated": "2026-10-23T11:20:10Z"
+      "hash": "00f6198454a39569",
+      "updated": "2026-10-24T06:22:39Z"
     },
     "mitre_attack": {
       "count": 706,
@@ -24,5 +24,5 @@
       "updated": "2026-10-23T11:20:11Z"
     }
   },
-  "updated_at": "2026-10-23T11:20:11Z"
+  "updated_at": "2026-10-24T06:22:41Z"
 }
